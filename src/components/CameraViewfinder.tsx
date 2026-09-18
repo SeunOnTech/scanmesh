@@ -1,18 +1,20 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Camera, FlipHorizontal, Zap, ZapOff, AlertCircle } from 'lucide-react';
 import { BarcodeScannerService } from '../core/BarcodeScanner';
-import type { ScanResult, TelemetryStats } from '../core/types';
+import type { ScanMode, ScanResult, TelemetryStats } from '../core/types';
 
 interface CameraViewfinderProps {
   onDetected: (result: ScanResult) => void;
   onTelemetryUpdate: (stats: TelemetryStats) => void;
   isLocked: boolean;
+  mode: ScanMode;
 }
 
 export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   onDetected,
   onTelemetryUpdate,
   isLocked,
+  mode,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerServiceRef = useRef<BarcodeScannerService | null>(null);
@@ -35,6 +37,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
       {
         roiSize: 260,
         debounceMs: 1500,
+        initialMode: mode,
       }
     );
 
@@ -44,6 +47,13 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
       service.destroy();
     };
   }, [onDetected, onTelemetryUpdate]);
+
+  // Sync mode changes with the scanner service
+  useEffect(() => {
+    if (scannerServiceRef.current) {
+      scannerServiceRef.current.setMode(mode);
+    }
+  }, [mode]);
 
   // Start Camera Stream
   const startCamera = useCallback(async () => {
@@ -172,34 +182,58 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             className={`relative w-[260px] h-[260px] rounded-2xl transition-all duration-300 ${
               isLocked
                 ? 'border-2 border-emerald-400 shadow-[0_0_35px_rgba(16,185,129,0.7)] bg-emerald-500/10'
+                : mode === 'ocr'
+                ? 'border border-cyan-500/30 bg-cyan-500/5'
                 : 'border border-white/20 bg-transparent'
             }`}
           >
             {/* 4 Glowing Corner Brackets */}
             <div
               className={`absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 rounded-tl-xl transition-colors ${
-                isLocked ? 'border-emerald-400' : 'border-emerald-500'
+                isLocked
+                  ? 'border-emerald-400'
+                  : mode === 'ocr'
+                  ? 'border-cyan-400'
+                  : 'border-emerald-500'
               }`}
             />
             <div
               className={`absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 rounded-tr-xl transition-colors ${
-                isLocked ? 'border-emerald-400' : 'border-emerald-500'
+                isLocked
+                  ? 'border-emerald-400'
+                  : mode === 'ocr'
+                  ? 'border-cyan-400'
+                  : 'border-emerald-500'
               }`}
             />
             <div
               className={`absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 rounded-bl-xl transition-colors ${
-                isLocked ? 'border-emerald-400' : 'border-emerald-500'
+                isLocked
+                  ? 'border-emerald-400'
+                  : mode === 'ocr'
+                  ? 'border-cyan-400'
+                  : 'border-emerald-500'
               }`}
             />
             <div
               className={`absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 rounded-br-xl transition-colors ${
-                isLocked ? 'border-emerald-400' : 'border-emerald-500'
+                isLocked
+                  ? 'border-emerald-400'
+                  : mode === 'ocr'
+                  ? 'border-cyan-400'
+                  : 'border-emerald-500'
               }`}
             />
 
             {/* Dynamic Laser Scanline */}
             {!isLocked && (
-              <div className="absolute left-2 right-2 h-[3px] bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_15px_#10B981] animate-scanbeam" />
+              <div
+                className={`absolute left-2 right-2 h-[3px] bg-gradient-to-r ${
+                  mode === 'ocr'
+                    ? 'from-transparent via-cyan-400 to-transparent shadow-[0_0_15px_#06B6D4]'
+                    : 'from-transparent via-emerald-400 to-transparent shadow-[0_0_15px_#10B981]'
+                } animate-scanbeam`}
+              />
             )}
 
             {/* Target Label */}
@@ -208,10 +242,18 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
                 className={`text-xs font-mono tracking-wider px-2.5 py-0.5 rounded-full border backdrop-blur-md transition-colors ${
                   isLocked
                     ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : mode === 'ocr'
+                    ? 'bg-cyan-950/60 text-cyan-300 border-cyan-500/30'
                     : 'bg-black/60 text-gray-300 border-white/10'
                 }`}
               >
-                {isLocked ? 'TARGET ACQUIRED' : 'ALIGN BARCODE IN BOX'}
+                {isLocked
+                  ? 'TARGET ACQUIRED'
+                  : mode === 'ocr'
+                  ? 'ALIGN PACKAGING TEXT / DIGITS'
+                  : mode === 'auto'
+                  ? 'ALIGN BARCODE OR DIGITS'
+                  : 'ALIGN BARCODE IN BOX'}
               </span>
             </div>
           </div>

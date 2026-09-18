@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, Gauge, Zap, Activity } from 'lucide-react';
+import { Cpu, Gauge, Zap, Activity, ScanText, CheckCircle2 } from 'lucide-react';
 import type { TelemetryStats } from '../core/types';
 
 interface TelemetryHUDProps {
@@ -7,21 +7,40 @@ interface TelemetryHUDProps {
 }
 
 export const TelemetryHUD: React.FC<TelemetryHUDProps> = ({ stats }) => {
-  const isOptimalLatency = stats.lastLatencyMs > 0 && stats.lastLatencyMs < 25;
+  const isOptimalLatency = stats.lastLatencyMs > 0 && stats.lastLatencyMs < 35;
+
+  const getModeBadge = () => {
+    switch (stats.mode) {
+      case 'auto':
+        return { label: 'AUTO DUAL (BARCODE + OCR)', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' };
+      case 'ocr':
+        return { label: 'MICRO-OCR TEXT MODE', color: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' };
+      case 'barcode':
+        return { label: 'HARDWARE BARCODE ONLY', color: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' };
+    }
+  };
+
+  const modeBadge = getModeBadge();
 
   return (
     <div className="w-full bg-gray-900/80 backdrop-blur-xl border border-gray-800/80 rounded-2xl p-4 shadow-xl">
-      <div className="flex items-center justify-between border-b border-gray-800 pb-3 mb-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 pb-3 mb-3">
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-emerald-400 animate-pulse" />
           <span className="text-xs font-semibold tracking-wider text-gray-300 uppercase">
             Vision Pipeline Telemetry
           </span>
         </div>
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-          LIVE 30Hz
-        </span>
+
+        <div className="flex items-center gap-2">
+          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border ${modeBadge.color}`}>
+            {modeBadge.label}
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+            LIVE
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -64,18 +83,35 @@ export const TelemetryHUD: React.FC<TelemetryHUDProps> = ({ stats }) => {
         </div>
 
         {/* Active Engine */}
-        <div className="bg-gray-950/60 border border-gray-800/60 rounded-xl p-3 col-span-2 sm:col-span-2">
+        <div className="bg-gray-950/60 border border-gray-800/60 rounded-xl p-3">
           <div className="flex items-center justify-between text-gray-400 mb-1">
-            <span className="text-xs font-mono">DECODER ENGINE</span>
+            <span className="text-xs font-mono">ACTIVE ENGINE</span>
             <Cpu className="w-3.5 h-3.5 text-indigo-400" />
           </div>
           <div className="truncate">
-            <span className="text-sm font-semibold text-white font-mono">
+            <span className="text-sm font-semibold text-white font-mono truncate block">
               {stats.engine}
             </span>
           </div>
           <span className="text-[10px] text-gray-400 mt-0.5 block font-mono truncate">
-            {stats.activeFormat ? `Target: ${stats.activeFormat.toUpperCase()}` : 'Universal Auto-Negotiate'}
+            {stats.activeFormat ? `Target: ${stats.activeFormat.toUpperCase()}` : 'Auto-Negotiate'}
+          </span>
+        </div>
+
+        {/* Checksum & OCR Gate */}
+        <div className="bg-gray-950/60 border border-gray-800/60 rounded-xl p-3">
+          <div className="flex items-center justify-between text-gray-400 mb-1">
+            <span className="text-xs font-mono">VALIDATION GATE</span>
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+          </div>
+          <div className="flex items-baseline gap-1">
+            <span className="text-xs font-bold font-mono text-emerald-400 uppercase tracking-tight truncate">
+              GS1 Modulo-10
+            </span>
+          </div>
+          <span className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1 font-mono">
+            <ScanText className="w-2.5 h-2.5 text-cyan-400" />
+            OCR: {stats.ocrStatus === 'processing' ? 'Scanning...' : 'Armed'}
           </span>
         </div>
       </div>

@@ -13,9 +13,23 @@ export interface Point {
   y: number;
 }
 
+export type ScanMode = 'auto' | 'barcode' | 'ocr';
+
+export type DetectionSource =
+  | 'HARDWARE_BARCODE'
+  | 'MICRO_OCR_DIGITS'
+  | 'PACKAGING_OCR_TEXT';
+
 export interface ScanResult {
   rawValue: string;
   format: BarcodeFormat | string;
+  source: DetectionSource;
+  modulo10Validated?: boolean;
+  ocrText?: string;
+  extractedLabel?: {
+    title?: string;
+    size?: string;
+  };
   cornerPoints?: Point[];
   timestamp: number;
   latencyMs: number;
@@ -26,9 +40,12 @@ export interface TelemetryStats {
   lastLatencyMs: number;
   avgLatencyMs: number;
   framesProcessed: number;
-  engine: 'Native BarcodeDetector' | 'Polyfill Engine' | 'Idle';
+  engine: 'Native BarcodeDetector' | 'Polyfill Engine' | 'Neural Micro-OCR' | 'Idle';
   activeFormat?: string;
   isScanning: boolean;
+  mode: ScanMode;
+  ocrConfidence?: number;
+  ocrStatus?: 'idle' | 'processing' | 'ready';
 }
 
 export interface ScannerConfig {

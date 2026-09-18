@@ -1,5 +1,6 @@
 import type {
   BarcodeFormat,
+  ScanMode,
   ScanResult,
   TelemetryStats,
   WorkerInMessage,
@@ -7,6 +8,8 @@ import type {
 } from './types';
 import { soundEngine } from './audio';
 import { triggerHaptic } from './haptics';
+import { ocrService } from './ocrService';
+import { preprocessForOcr } from './imagePreprocess';
 
 export interface BarcodeScannerCallbacks {
   onDetected: (result: ScanResult) => void;
@@ -24,12 +27,21 @@ export class BarcodeScannerService {
   private isProcessingFrame: boolean = false;
   private animationFrameId: number | null = null;
 
+  // Active Mode: 'auto' | 'barcode' | 'ocr'
+  private scanMode: ScanMode = 'auto';
+
   // Telemetry & FPS tracking
   private frameCount: number = 0;
   private lastFpsUpdateTime: number = performance.now();
   private currentFps: number = 0;
   private latencyHistory: number[] = [];
-  private activeEngine: 'Native BarcodeDetector' | 'Polyfill Engine' | 'Idle' = 'Idle';
+  private activeEngine: 'Native BarcodeDetector' | 'Polyfill Engine' | 'Neural Micro-OCR' | 'Idle' = 'Idle';
+  private lastOcrConfidence: number = 0;
+
+  // OCR Interleaving
+  private lastOcrAttemptTime: number = 0;
+  private ocrIntervalMs: number = 400; // Throttle OCR to preserve mobile battery
+  private lastBarcodeSeenTime: number = 0;
 
   // Debounce & scan lock
   private lastScannedCode: string | null = null;
@@ -46,6 +58,7 @@ export class BarcodeScannerService {
       formats?: BarcodeFormat[];
       roiSize?: number;
       debounceMs?: number;
+      initialMode?: ScanMode;
     }
   ) {
     this.callbacks = callbacks;
@@ -63,8 +76,13 @@ export class BarcodeScannerService {
     if (options?.debounceMs !== undefined) {
       this.debounceMs = options.debounceMs;
     }
+    if (options?.initialMode) {
+      this.scanMode = options.initialMode;
+    }
 
     this.initWorker();
+    // Warm up OCR engine in background
+    ocrService.init();
   }
 
   private initWorker() {
@@ -80,7 +98,7 @@ export class BarcodeScannerService {
 
       this.worker.onerror = (err) => {
         console.error('ScanMesh Worker Error:', err);
-        this.callbacks.onError?.(new Error('Scanner worker encounter error'));
+        this.callbacks.onError?.(new Error('Scanner worker encountered error'));
       };
 
       const initMsg: WorkerInMessage = {
@@ -94,11 +112,26 @@ export class BarcodeScannerService {
     }
   }
 
+  public setMode(mode: ScanMode) {
+    this.scanMode = mode;
+    this.resetLock();
+    if (mode === 'ocr') {
+      this.activeEngine = 'Neural Micro-OCR';
+    }
+    this.emitTelemetry(0);
+  }
+
+  public getMode(): ScanMode {
+    return this.scanMode;
+  }
+
   private handleWorkerMessage(msg: WorkerOutMessage) {
     this.isProcessingFrame = false;
 
     if (msg.type === 'INIT_SUCCESS') {
-      this.activeEngine = msg.engine;
+      if (this.scanMode !== 'ocr') {
+        this.activeEngine = msg.engine;
+      }
       this.emitTelemetry(0);
       return;
     }
@@ -106,10 +139,10 @@ export class BarcodeScannerService {
     if (msg.type === 'FRAME_RESULT') {
       const { success, result, latencyMs } = msg;
 
-      // Update rolling telemetry stats
       this.recordLatency(latencyMs);
 
       if (success && result) {
+        this.lastBarcodeSeenTime = performance.now();
         const now = performance.now();
         const isDuplicate =
           this.lastScannedCode === result.rawValue &&
@@ -126,6 +159,8 @@ export class BarcodeScannerService {
           const scanResult: ScanResult = {
             rawValue: result.rawValue,
             format: result.format,
+            source: 'HARDWARE_BARCODE',
+            modulo10Validated: true,
             cornerPoints: result.cornerPoints,
             timestamp: Date.now(),
             latencyMs,
@@ -165,9 +200,12 @@ export class BarcodeScannerService {
       lastLatencyMs: Math.round(lastLatencyMs * 10) / 10,
       avgLatencyMs: Math.round(avgLatencyMs * 10) / 10,
       framesProcessed: this.frameCount,
-      engine: this.activeEngine,
+      engine: this.scanMode === 'ocr' ? 'Neural Micro-OCR' : this.activeEngine,
       activeFormat,
       isScanning: this.isRunning,
+      mode: this.scanMode,
+      ocrConfidence: this.lastOcrConfidence,
+      ocrStatus: ocrService.busy ? 'processing' : 'ready',
     });
   }
 
@@ -206,7 +244,7 @@ export class BarcodeScannerService {
   }
 
   private async captureAndProcess() {
-    if (!this.isRunning || this.isProcessingFrame || !this.videoElement || !this.worker) {
+    if (!this.isRunning || !this.videoElement) {
       return;
     }
 
@@ -219,38 +257,140 @@ export class BarcodeScannerService {
     const videoHeight = video.videoHeight;
     if (videoWidth === 0 || videoHeight === 0) return;
 
-    this.isProcessingFrame = true;
+    const minDimension = Math.min(videoWidth, videoHeight);
+    const cropRatio = Math.min(0.85, Math.max(0.4, this.roiSize / 400));
+    const cropSize = Math.round(minDimension * cropRatio);
+    const sx = Math.max(0, Math.round((videoWidth - cropSize) / 2));
+    const sy = Math.max(0, Math.round((videoHeight - cropSize) / 2));
 
-    try {
-      // Calculate center Region of Interest (ROI) scaled by configured roiSize
-      const minDimension = Math.min(videoWidth, videoHeight);
-      const cropRatio = Math.min(0.85, Math.max(0.4, this.roiSize / 400));
-      const cropSize = Math.round(minDimension * cropRatio);
-      const sx = Math.max(0, Math.round((videoWidth - cropSize) / 2));
-      const sy = Math.max(0, Math.round((videoHeight - cropSize) / 2));
+    const now = performance.now();
 
-      // Extract high-efficiency ImageBitmap directly from the video stream
-      if ('createImageBitmap' in window) {
-        const bitmap = await createImageBitmap(video, sx, sy, cropSize, cropSize, {
-          resizeWidth: 320,
-          resizeHeight: 320,
-          resizeQuality: 'low', // Fast downsample for sub-20ms speed
-        });
-
-        const msg: WorkerInMessage = {
-          type: 'DETECT_FRAME',
-          bitmap,
-          timestamp: performance.now(),
-        };
-
-        // Zero-copy transfer of ImageBitmap memory buffer to worker
-        this.worker.postMessage(msg, [bitmap]);
-      } else {
-        // Fallback for environments lacking createImageBitmap
-        this.fallbackCanvasCapture(video, sx, sy, cropSize);
+    // TRACK 1: Hardware Barcode Scanner (when in 'auto' or 'barcode' mode)
+    if (this.scanMode !== 'ocr' && !this.isProcessingFrame && this.worker) {
+      this.isProcessingFrame = true;
+      try {
+        if ('createImageBitmap' in window) {
+          const bitmap = await createImageBitmap(video, sx, sy, cropSize, cropSize, {
+            resizeWidth: 320,
+            resizeHeight: 320,
+            resizeQuality: 'low',
+          });
+          this.worker.postMessage({ type: 'DETECT_FRAME', bitmap, timestamp: now }, [bitmap]);
+        } else {
+          this.fallbackCanvasCapture(video, sx, sy, cropSize);
+        }
+      } catch {
+        this.isProcessingFrame = false;
       }
-    } catch {
-      this.isProcessingFrame = false;
+    }
+
+    // TRACK 2: Micro-OCR & Packaging Text Engine
+    // Triggers in 'ocr' mode OR in 'auto' mode when no barcode was seen in the last 250ms
+    const shouldRunOcr =
+      (this.scanMode === 'ocr' ||
+        (this.scanMode === 'auto' && now - this.lastBarcodeSeenTime > 250)) &&
+      now - this.lastOcrAttemptTime > this.ocrIntervalMs &&
+      !ocrService.busy;
+
+    if (shouldRunOcr) {
+      this.lastOcrAttemptTime = now;
+      this.runOcrPass(video, sx, sy, cropSize);
+    }
+  }
+
+  private async runOcrPass(
+    video: HTMLVideoElement,
+    sx: number,
+    sy: number,
+    cropSize: number
+  ) {
+    try {
+      // Capture high-contrast crop on offscreen canvas
+      if (!this.offscreenCanvas) {
+        if (typeof OffscreenCanvas !== 'undefined') {
+          this.offscreenCanvas = new OffscreenCanvas(360, 360);
+        } else {
+          const c = document.createElement('canvas');
+          c.width = 360;
+          c.height = 360;
+          this.offscreenCanvas = c;
+        }
+        this.canvasCtx = this.offscreenCanvas.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D;
+      }
+
+      if (!this.canvasCtx) return;
+      this.canvasCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, 360, 360);
+
+      // Preprocess: Grayscale + Otsu adaptive binarization
+      const preprocessed = preprocessForOcr(this.offscreenCanvas, 360);
+
+      // Mode: 'digits' in auto fallback, 'text' in direct OCR mode
+      const ocrMode = this.scanMode === 'ocr' ? 'text' : 'digits';
+      const ocrResult = await ocrService.recognize(preprocessed, ocrMode);
+
+      if (ocrResult) {
+        this.lastOcrConfidence = ocrResult.confidence;
+        const now = performance.now();
+
+        // Check if OCR discovered a mathematically verified Modulo-10 barcode number
+        if (ocrResult.validatedCodes.length > 0) {
+          const topCode = ocrResult.validatedCodes[0];
+          const isDuplicate =
+            this.lastScannedCode === topCode.code &&
+            now - this.lastScanTime < this.debounceMs;
+
+          if (!isDuplicate) {
+            this.lastScannedCode = topCode.code;
+            this.lastScanTime = now;
+
+            soundEngine.playSuccessBeep();
+            triggerHaptic('success');
+
+            const scanResult: ScanResult = {
+              rawValue: topCode.code,
+              format: topCode.format,
+              source: 'MICRO_OCR_DIGITS',
+              modulo10Validated: true,
+              ocrText: ocrResult.rawText,
+              timestamp: Date.now(),
+              latencyMs: ocrResult.latencyMs,
+            };
+
+            this.callbacks.onDetected(scanResult);
+          }
+        } else if (this.scanMode === 'ocr' && ocrResult.extractedLabel.titleCandidate) {
+          // Direct packaging text match
+          const candidateTitle = ocrResult.extractedLabel.titleCandidate;
+          const isDuplicate =
+            this.lastScannedCode === candidateTitle &&
+            now - this.lastScanTime < this.debounceMs;
+
+          if (!isDuplicate && ocrResult.confidence > 45) {
+            this.lastScannedCode = candidateTitle;
+            this.lastScanTime = now;
+
+            soundEngine.playSuccessBeep();
+            triggerHaptic('success');
+
+            const scanResult: ScanResult = {
+              rawValue: candidateTitle,
+              format: 'PACKAGING_TEXT',
+              source: 'PACKAGING_OCR_TEXT',
+              ocrText: ocrResult.rawText,
+              extractedLabel: {
+                title: ocrResult.extractedLabel.titleCandidate,
+                size: ocrResult.extractedLabel.sizeCandidate,
+              },
+              timestamp: Date.now(),
+              latencyMs: ocrResult.latencyMs,
+            };
+
+            this.callbacks.onDetected(scanResult);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('OCR pass failed:', err);
     }
   }
 
@@ -276,20 +416,22 @@ export class BarcodeScannerService {
 
     if (this.canvasCtx) {
       this.canvasCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, 320, 320);
-      createImageBitmap(this.offscreenCanvas).then((bitmap) => {
-        if (this.worker) {
-          this.worker.postMessage(
-            {
-              type: 'DETECT_FRAME',
-              bitmap,
-              timestamp: performance.now(),
-            },
-            [bitmap]
-          );
-        }
-      }).catch(() => {
-        this.isProcessingFrame = false;
-      });
+      createImageBitmap(this.offscreenCanvas)
+        .then((bitmap) => {
+          if (this.worker) {
+            this.worker.postMessage(
+              {
+                type: 'DETECT_FRAME',
+                bitmap,
+                timestamp: performance.now(),
+              },
+              [bitmap]
+            );
+          }
+        })
+        .catch(() => {
+          this.isProcessingFrame = false;
+        });
     } else {
       this.isProcessingFrame = false;
     }
@@ -301,5 +443,6 @@ export class BarcodeScannerService {
       this.worker.terminate();
       this.worker = null;
     }
+    ocrService.terminate();
   }
 }
