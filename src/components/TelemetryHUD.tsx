@@ -9,35 +9,22 @@ interface TelemetryHUDProps {
 export const TelemetryHUD: React.FC<TelemetryHUDProps> = ({ stats }) => {
   const isOptimalLatency = stats.lastLatencyMs > 0 && stats.lastLatencyMs < 35;
 
-  const getModeBadge = () => {
-    switch (stats.mode) {
-      case 'auto':
-        return { label: 'AUTO DUAL (BARCODE + OCR)', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' };
-      case 'ocr':
-        return { label: 'MICRO-OCR TEXT MODE', color: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' };
-      case 'barcode':
-        return { label: 'HARDWARE BARCODE ONLY', color: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' };
-    }
-  };
-
-  const modeBadge = getModeBadge();
-
   return (
     <div className="w-full bg-gray-900/80 backdrop-blur-xl border border-gray-800/80 rounded-2xl p-4 shadow-xl">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 pb-3 mb-3">
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-emerald-400 animate-pulse" />
           <span className="text-xs font-semibold tracking-wider text-gray-300 uppercase">
-            Vision Pipeline Telemetry
+            Unified Vision Telemetry
           </span>
         </div>
 
         <div className="flex items-center gap-2">
-          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border ${modeBadge.color}`}>
-            {modeBadge.label}
+          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
+            AUTO-DETECT ACTIVE
           </span>
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
             LIVE
           </span>
         </div>
@@ -78,7 +65,7 @@ export const TelemetryHUD: React.FC<TelemetryHUDProps> = ({ stats }) => {
             <span className="text-xs text-gray-400 font-mono">FPS</span>
           </div>
           <span className="text-[10px] text-gray-400 mt-0.5 block font-mono">
-            Worker Pipeline
+            Optical Pipeline
           </span>
         </div>
 
@@ -94,14 +81,14 @@ export const TelemetryHUD: React.FC<TelemetryHUDProps> = ({ stats }) => {
             </span>
           </div>
           <span className="text-[10px] text-gray-400 mt-0.5 block font-mono truncate">
-            {stats.activeFormat ? `Target: ${stats.activeFormat.toUpperCase()}` : 'Auto-Negotiate'}
+            {stats.activeFormat ? `Target: ${stats.activeFormat.toUpperCase()}` : 'Universal Auto-Lock'}
           </span>
         </div>
 
         {/* Checksum & OCR Gate */}
         <div className="bg-gray-950/60 border border-gray-800/60 rounded-xl p-3">
           <div className="flex items-center justify-between text-gray-400 mb-1">
-            <span className="text-xs font-mono">VALIDATION GATE</span>
+            <span className="text-xs font-mono">INTEGRITY GATE</span>
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
           </div>
           <div className="flex items-baseline gap-1">
@@ -111,7 +98,7 @@ export const TelemetryHUD: React.FC<TelemetryHUDProps> = ({ stats }) => {
           </div>
           <span className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1 font-mono">
             <ScanText className="w-2.5 h-2.5 text-cyan-400" />
-            OCR: {stats.ocrStatus === 'processing' ? 'Scanning...' : 'Armed'}
+            Micro-OCR: {stats.ocrStatus === 'processing' ? 'Active' : 'Armed'}
           </span>
         </div>
       </div>

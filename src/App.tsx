@@ -1,12 +1,11 @@
 import { useState, useCallback } from 'react';
-import { Scan, Sparkles, History, Trash2, ShieldCheck, Zap, Barcode, ScanText } from 'lucide-react';
+import { Scan, Sparkles, History, Trash2, ShieldCheck } from 'lucide-react';
 import { CameraViewfinder } from './components/CameraViewfinder';
 import { TelemetryHUD } from './components/TelemetryHUD';
 import { ScanResultCard } from './components/ScanResultCard';
-import type { ScanMode, ScanResult, TelemetryStats } from './core/types';
+import type { ScanResult, TelemetryStats } from './core/types';
 
 export function App() {
-  const [scanMode, setScanMode] = useState<ScanMode>('auto');
   const [currentResult, setCurrentResult] = useState<ScanResult | null>(null);
   const [history, setHistory] = useState<ScanResult[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryStats>({
@@ -14,9 +13,8 @@ export function App() {
     lastLatencyMs: 0,
     avgLatencyMs: 0,
     framesProcessed: 0,
-    engine: 'Idle',
+    engine: 'Unified Hybrid',
     isScanning: false,
-    mode: 'auto',
   });
 
   const handleDetected = useCallback((result: ScanResult) => {
@@ -36,11 +34,6 @@ export function App() {
     setHistory([]);
   }, []);
 
-  const handleModeChange = (mode: ScanMode) => {
-    setScanMode(mode);
-    setCurrentResult(null);
-  };
-
   return (
     <div className="min-h-screen bg-[#0B0F19] text-gray-100 flex flex-col items-center px-4 py-6 sm:py-10">
       <div className="w-full max-w-2xl flex flex-col gap-5">
@@ -57,11 +50,11 @@ export function App() {
                 <h1 className="text-xl font-bold tracking-tight text-white font-sans">
                   ScanMesh<span className="text-emerald-400">™</span>
                 </h1>
-                <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
-                  DAY 2: DUAL-TRACK OCR
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  UNIFIED AI ENGINE
                 </span>
               </div>
-              <p className="text-xs text-gray-400">Barcode + Micro-OCR Checksum Engine</p>
+              <p className="text-xs text-gray-400">Auto-detects barcodes, printed digits & packaging</p>
             </div>
           </div>
 
@@ -72,52 +65,12 @@ export function App() {
           </div>
         </header>
 
-        {/* Engine Mode Switcher Toolbar */}
-        <div className="grid grid-cols-3 gap-2 bg-gray-950/80 p-1.5 rounded-2xl border border-gray-800/80">
-          <button
-            onClick={() => handleModeChange('auto')}
-            className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-              scanMode === 'auto'
-                ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-500/20'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-gray-900/60'
-            }`}
-          >
-            <Zap className="w-3.5 h-3.5" />
-            <span className="truncate">Auto Dual</span>
-          </button>
-
-          <button
-            onClick={() => handleModeChange('barcode')}
-            className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-              scanMode === 'barcode'
-                ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-500/20'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-gray-900/60'
-            }`}
-          >
-            <Barcode className="w-3.5 h-3.5" />
-            <span className="truncate">Barcode Only</span>
-          </button>
-
-          <button
-            onClick={() => handleModeChange('ocr')}
-            className={`py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-              scanMode === 'ocr'
-                ? 'bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-lg shadow-cyan-500/20'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-gray-900/60'
-            }`}
-          >
-            <ScanText className="w-3.5 h-3.5" />
-            <span className="truncate">Text & Packaging</span>
-          </button>
-        </div>
-
         {/* Viewfinder Section */}
         <section className="relative">
           <CameraViewfinder
             onDetected={handleDetected}
             onTelemetryUpdate={handleTelemetryUpdate}
             isLocked={Boolean(currentResult)}
-            mode={scanMode}
           />
         </section>
 
@@ -183,8 +136,8 @@ export function App() {
         {/* Quick Instructions / Info Footer */}
         <footer className="text-center text-xs text-gray-400 pt-2 pb-6 border-t border-gray-800/40">
           <p className="flex items-center justify-center gap-1.5 text-gray-400">
-            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Dual-Track Active: Scans standard barcodes AND reads printed text/numbers when stripes fail.</span>
+            <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Point at any product: cleanly reads barcodes, damaged barcode numbers, and packaging text automatically.</span>
           </p>
           <p className="text-[11px] text-gray-400 mt-1">
             Engine operates 100% on-device via WebAssembly & Native Hardware Acceleration.

@@ -1,20 +1,18 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Camera, FlipHorizontal, Zap, ZapOff, AlertCircle } from 'lucide-react';
 import { BarcodeScannerService } from '../core/BarcodeScanner';
-import type { ScanMode, ScanResult, TelemetryStats } from '../core/types';
+import type { ScanResult, TelemetryStats } from '../core/types';
 
 interface CameraViewfinderProps {
   onDetected: (result: ScanResult) => void;
   onTelemetryUpdate: (stats: TelemetryStats) => void;
   isLocked: boolean;
-  mode: ScanMode;
 }
 
 export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   onDetected,
   onTelemetryUpdate,
   isLocked,
-  mode,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerServiceRef = useRef<BarcodeScannerService | null>(null);
@@ -26,7 +24,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
 
-  // Initialize BarcodeScannerService once
+  // Initialize unified BarcodeScannerService
   useEffect(() => {
     const service = new BarcodeScannerService(
       {
@@ -37,7 +35,6 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
       {
         roiSize: 260,
         debounceMs: 1500,
-        initialMode: mode,
       }
     );
 
@@ -48,19 +45,11 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
     };
   }, [onDetected, onTelemetryUpdate]);
 
-  // Sync mode changes with the scanner service
-  useEffect(() => {
-    if (scannerServiceRef.current) {
-      scannerServiceRef.current.setMode(mode);
-    }
-  }, [mode]);
-
   // Start Camera Stream
   const startCamera = useCallback(async () => {
     setIsInitializing(true);
     setCameraError(null);
 
-    // Stop existing stream tracks
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
     }
@@ -88,7 +77,6 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
         }
       }
 
-      // Check for torch capability
       const videoTrack = mediaStream.getVideoTracks()[0];
       if (videoTrack) {
         const capabilities = videoTrack.getCapabilities?.() as { torch?: boolean };
@@ -114,7 +102,6 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
     };
   }, [facingMode]);
 
-  // Toggle Torch/Flashlight
   const toggleTorch = async () => {
     if (!stream) return;
     const track = stream.getVideoTracks()[0];
@@ -131,7 +118,6 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
     }
   };
 
-  // Flip Camera Front/Back
   const toggleCamera = () => {
     setFacingMode((prev) => (prev === 'environment' ? 'user' : 'environment'));
     setIsTorchOn(false);
@@ -139,7 +125,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
 
   return (
     <div className="relative w-full aspect-[4/3] sm:aspect-[16/9] max-h-[560px] bg-black rounded-2xl overflow-hidden shadow-2xl border border-gray-800">
-      {/* Video Element */}
+      {/* Video Stream Element */}
       <video
         ref={videoRef}
         playsInline
@@ -148,15 +134,15 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
         className="w-full h-full object-cover"
       />
 
-      {/* Camera Loading Overlay */}
+      {/* Loading Overlay */}
       {isInitializing && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-950/90 backdrop-blur-sm z-20">
           <div className="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-          <p className="text-sm font-medium text-gray-300">Initializing Optical Sensor...</p>
+          <p className="text-sm font-medium text-gray-300">Activating AI Optical Sensor...</p>
         </div>
       )}
 
-      {/* Permission / Hardware Error State */}
+      {/* Permission / Hardware Error */}
       {cameraError && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-950/95 p-6 text-center z-30">
           <AlertCircle className="w-12 h-12 text-rose-500 mb-3" />
@@ -174,7 +160,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
       {/* Viewfinder Target Framing & Reticle */}
       {!cameraError && !isInitializing && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-          {/* Subtle Outer Vignette Mask */}
+          {/* Subtle Vignette Mask */}
           <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" />
 
           {/* Central Target Box (Region of Interest) */}
@@ -182,85 +168,53 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             className={`relative w-[260px] h-[260px] rounded-2xl transition-all duration-300 ${
               isLocked
                 ? 'border-2 border-emerald-400 shadow-[0_0_35px_rgba(16,185,129,0.7)] bg-emerald-500/10'
-                : mode === 'ocr'
-                ? 'border border-cyan-500/30 bg-cyan-500/5'
                 : 'border border-white/20 bg-transparent'
             }`}
           >
             {/* 4 Glowing Corner Brackets */}
             <div
               className={`absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 rounded-tl-xl transition-colors ${
-                isLocked
-                  ? 'border-emerald-400'
-                  : mode === 'ocr'
-                  ? 'border-cyan-400'
-                  : 'border-emerald-500'
+                isLocked ? 'border-emerald-400' : 'border-emerald-500'
               }`}
             />
             <div
               className={`absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 rounded-tr-xl transition-colors ${
-                isLocked
-                  ? 'border-emerald-400'
-                  : mode === 'ocr'
-                  ? 'border-cyan-400'
-                  : 'border-emerald-500'
+                isLocked ? 'border-emerald-400' : 'border-emerald-500'
               }`}
             />
             <div
               className={`absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 rounded-bl-xl transition-colors ${
-                isLocked
-                  ? 'border-emerald-400'
-                  : mode === 'ocr'
-                  ? 'border-cyan-400'
-                  : 'border-emerald-500'
+                isLocked ? 'border-emerald-400' : 'border-emerald-500'
               }`}
             />
             <div
               className={`absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 rounded-br-xl transition-colors ${
-                isLocked
-                  ? 'border-emerald-400'
-                  : mode === 'ocr'
-                  ? 'border-cyan-400'
-                  : 'border-emerald-500'
+                isLocked ? 'border-emerald-400' : 'border-emerald-500'
               }`}
             />
 
             {/* Dynamic Laser Scanline */}
             {!isLocked && (
-              <div
-                className={`absolute left-2 right-2 h-[3px] bg-gradient-to-r ${
-                  mode === 'ocr'
-                    ? 'from-transparent via-cyan-400 to-transparent shadow-[0_0_15px_#06B6D4]'
-                    : 'from-transparent via-emerald-400 to-transparent shadow-[0_0_15px_#10B981]'
-                } animate-scanbeam`}
-              />
+              <div className="absolute left-2 right-2 h-[3px] bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_15px_#10B981] animate-scanbeam" />
             )}
 
             {/* Target Label */}
             <div className="absolute -bottom-8 left-0 right-0 text-center">
               <span
-                className={`text-xs font-mono tracking-wider px-2.5 py-0.5 rounded-full border backdrop-blur-md transition-colors ${
+                className={`text-xs font-mono tracking-wider px-3 py-1 rounded-full border backdrop-blur-md transition-colors ${
                   isLocked
                     ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                    : mode === 'ocr'
-                    ? 'bg-cyan-950/60 text-cyan-300 border-cyan-500/30'
-                    : 'bg-black/60 text-gray-300 border-white/10'
+                    : 'bg-black/70 text-gray-300 border-white/10'
                 }`}
               >
-                {isLocked
-                  ? 'TARGET ACQUIRED'
-                  : mode === 'ocr'
-                  ? 'ALIGN PACKAGING TEXT / DIGITS'
-                  : mode === 'auto'
-                  ? 'ALIGN BARCODE OR DIGITS'
-                  : 'ALIGN BARCODE IN BOX'}
+                {isLocked ? 'TARGET ACQUIRED' : 'ALIGN BARCODE OR PACKAGING'}
               </span>
             </div>
           </div>
         </div>
       )}
 
-      {/* Floating Control Toolbar */}
+      {/* Floating Controls */}
       <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
         {hasTorch && (
           <button

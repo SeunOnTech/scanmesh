@@ -1,6 +1,5 @@
 import type {
   BarcodeFormat,
-  ScanMode,
   ScanResult,
   TelemetryStats,
   WorkerInMessage,
@@ -27,20 +26,17 @@ export class BarcodeScannerService {
   private isProcessingFrame: boolean = false;
   private animationFrameId: number | null = null;
 
-  // Active Mode: 'auto' | 'barcode' | 'ocr'
-  private scanMode: ScanMode = 'auto';
-
   // Telemetry & FPS tracking
   private frameCount: number = 0;
   private lastFpsUpdateTime: number = performance.now();
   private currentFps: number = 0;
   private latencyHistory: number[] = [];
-  private activeEngine: 'Native BarcodeDetector' | 'Polyfill Engine' | 'Neural Micro-OCR' | 'Idle' = 'Idle';
+  private activeEngine: 'Native BarcodeDetector' | 'Polyfill Engine' | 'Neural Micro-OCR' | 'Unified Hybrid' | 'Idle' = 'Idle';
   private lastOcrConfidence: number = 0;
 
-  // OCR Interleaving
+  // Unified Intelligent OCR Interleaving
   private lastOcrAttemptTime: number = 0;
-  private ocrIntervalMs: number = 400; // Throttle OCR to preserve mobile battery
+  private ocrIntervalMs: number = 380; // Interleave OCR passes smoothly
   private lastBarcodeSeenTime: number = 0;
 
   // Debounce & scan lock
@@ -58,7 +54,6 @@ export class BarcodeScannerService {
       formats?: BarcodeFormat[];
       roiSize?: number;
       debounceMs?: number;
-      initialMode?: ScanMode;
     }
   ) {
     this.callbacks = callbacks;
@@ -76,12 +71,8 @@ export class BarcodeScannerService {
     if (options?.debounceMs !== undefined) {
       this.debounceMs = options.debounceMs;
     }
-    if (options?.initialMode) {
-      this.scanMode = options.initialMode;
-    }
 
     this.initWorker();
-    // Warm up OCR engine in background
     ocrService.init();
   }
 
@@ -112,26 +103,11 @@ export class BarcodeScannerService {
     }
   }
 
-  public setMode(mode: ScanMode) {
-    this.scanMode = mode;
-    this.resetLock();
-    if (mode === 'ocr') {
-      this.activeEngine = 'Neural Micro-OCR';
-    }
-    this.emitTelemetry(0);
-  }
-
-  public getMode(): ScanMode {
-    return this.scanMode;
-  }
-
   private handleWorkerMessage(msg: WorkerOutMessage) {
     this.isProcessingFrame = false;
 
     if (msg.type === 'INIT_SUCCESS') {
-      if (this.scanMode !== 'ocr') {
-        this.activeEngine = msg.engine;
-      }
+      this.activeEngine = 'Unified Hybrid';
       this.emitTelemetry(0);
       return;
     }
@@ -152,7 +128,6 @@ export class BarcodeScannerService {
           this.lastScannedCode = result.rawValue;
           this.lastScanTime = now;
 
-          // Sensory confirmation
           soundEngine.playSuccessBeep();
           triggerHaptic('success');
 
@@ -200,10 +175,9 @@ export class BarcodeScannerService {
       lastLatencyMs: Math.round(lastLatencyMs * 10) / 10,
       avgLatencyMs: Math.round(avgLatencyMs * 10) / 10,
       framesProcessed: this.frameCount,
-      engine: this.scanMode === 'ocr' ? 'Neural Micro-OCR' : this.activeEngine,
+      engine: this.activeEngine,
       activeFormat,
       isScanning: this.isRunning,
-      mode: this.scanMode,
       ocrConfidence: this.lastOcrConfidence,
       ocrStatus: ocrService.busy ? 'processing' : 'ready',
     });
@@ -265,8 +239,8 @@ export class BarcodeScannerService {
 
     const now = performance.now();
 
-    // TRACK 1: Hardware Barcode Scanner (when in 'auto' or 'barcode' mode)
-    if (this.scanMode !== 'ocr' && !this.isProcessingFrame && this.worker) {
+    // TRACK 1: Real-time Barcode Detection (every frame)
+    if (!this.isProcessingFrame && this.worker) {
       this.isProcessingFrame = true;
       try {
         if ('createImageBitmap' in window) {
@@ -284,28 +258,26 @@ export class BarcodeScannerService {
       }
     }
 
-    // TRACK 2: Micro-OCR & Packaging Text Engine
-    // Triggers in 'ocr' mode OR in 'auto' mode when no barcode was seen in the last 250ms
+    // TRACK 2: Unified Micro-OCR Pass (digits + packaging text)
+    // Runs when no barcode was recently detected
     const shouldRunOcr =
-      (this.scanMode === 'ocr' ||
-        (this.scanMode === 'auto' && now - this.lastBarcodeSeenTime > 250)) &&
+      now - this.lastBarcodeSeenTime > 200 &&
       now - this.lastOcrAttemptTime > this.ocrIntervalMs &&
       !ocrService.busy;
 
     if (shouldRunOcr) {
       this.lastOcrAttemptTime = now;
-      this.runOcrPass(video, sx, sy, cropSize);
+      this.runUnifiedOcrPass(video, sx, sy, cropSize);
     }
   }
 
-  private async runOcrPass(
+  private async runUnifiedOcrPass(
     video: HTMLVideoElement,
     sx: number,
     sy: number,
     cropSize: number
   ) {
     try {
-      // Capture high-contrast crop on offscreen canvas
       if (!this.offscreenCanvas) {
         if (typeof OffscreenCanvas !== 'undefined') {
           this.offscreenCanvas = new OffscreenCanvas(360, 360);
@@ -321,18 +293,17 @@ export class BarcodeScannerService {
       if (!this.canvasCtx) return;
       this.canvasCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, 360, 360);
 
-      // Preprocess: Grayscale + Otsu adaptive binarization
+      // Preprocess: Grayscale + Otsu contrast enhancement
       const preprocessed = preprocessForOcr(this.offscreenCanvas, 360);
 
-      // Mode: 'digits' in auto fallback, 'text' in direct OCR mode
-      const ocrMode = this.scanMode === 'ocr' ? 'text' : 'digits';
-      const ocrResult = await ocrService.recognize(preprocessed, ocrMode);
+      // Recognize text & numbers in one pass
+      const ocrResult = await ocrService.recognize(preprocessed, 'text');
 
       if (ocrResult) {
         this.lastOcrConfidence = ocrResult.confidence;
         const now = performance.now();
 
-        // Check if OCR discovered a mathematically verified Modulo-10 barcode number
+        // PRIORITY A: GS1 Modulo-10 verified barcode digits (damaged barcode fallback)
         if (ocrResult.validatedCodes.length > 0) {
           const topCode = ocrResult.validatedCodes[0];
           const isDuplicate =
@@ -357,15 +328,18 @@ export class BarcodeScannerService {
             };
 
             this.callbacks.onDetected(scanResult);
+            return;
           }
-        } else if (this.scanMode === 'ocr' && ocrResult.extractedLabel.titleCandidate) {
-          // Direct packaging text match
+        }
+
+        // PRIORITY B: Packaging Text & Unit (for unbarcoded goods)
+        if (ocrResult.extractedLabel.titleCandidate && ocrResult.confidence > 50) {
           const candidateTitle = ocrResult.extractedLabel.titleCandidate;
           const isDuplicate =
             this.lastScannedCode === candidateTitle &&
             now - this.lastScanTime < this.debounceMs;
 
-          if (!isDuplicate && ocrResult.confidence > 45) {
+          if (!isDuplicate) {
             this.lastScannedCode = candidateTitle;
             this.lastScanTime = now;
 
@@ -390,7 +364,7 @@ export class BarcodeScannerService {
         }
       }
     } catch (err) {
-      console.warn('OCR pass failed:', err);
+      console.warn('Unified OCR pass failed:', err);
     }
   }
 
