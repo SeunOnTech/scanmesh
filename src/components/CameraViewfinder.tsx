@@ -198,6 +198,12 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               <div className="absolute left-2 right-2 h-[3px] bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_15px_#10B981] animate-scanbeam" />
             )}
 
+            <div className="absolute bottom-2 left-3 right-3 h-[25%] border-t border-dashed border-cyan-400/30 bg-cyan-500/[0.04] rounded-b-xl flex items-center justify-center pointer-events-none">
+              <span className="text-[9px] font-mono tracking-widest text-cyan-400/50 uppercase">
+                Number Strip Zone
+              </span>
+            </div>
+
             {/* Target Label */}
             <div className="absolute -bottom-8 left-0 right-0 text-center">
               <span

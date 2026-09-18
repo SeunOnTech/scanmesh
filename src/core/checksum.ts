@@ -80,50 +80,64 @@ export function extractValidProductCodes(text: string): ValidatedProductCode[] {
   const results: ValidatedProductCode[] = [];
   const seen = new Set<string>();
 
-  // 1. Remove non-alphanumeric noise while preserving digit groupings
+  const testCandidate = (raw: string) => {
+    if (raw.length === 13 && validateEan13(raw)) {
+      if (!seen.has(raw)) {
+        seen.add(raw);
+        results.push({ code: raw, format: 'ean_13', valid: true });
+      }
+      return true;
+    }
+    if (raw.length === 12 && validateUpcA(raw)) {
+      if (!seen.has(raw)) {
+        seen.add(raw);
+        results.push({ code: raw, format: 'upc_a', valid: true });
+      }
+      return true;
+    }
+    if (raw.length === 8 && validateEan8(raw)) {
+      if (!seen.has(raw)) {
+        seen.add(raw);
+        results.push({ code: raw, format: 'ean_8', valid: true });
+      }
+      return true;
+    }
+    return false;
+  };
+
   const normalized = text.replace(/[^a-zA-Z0-9\s]/g, ' ');
-
-  // 2. Look for explicit consecutive digit sequences (8, 12, 13 digits)
   const candidateMatches = normalized.match(/\b\d{8,14}\b/g) || [];
-
-  for (const rawCandidate of candidateMatches) {
-    // Check 13-digit EAN-13
-    if (rawCandidate.length === 13 && validateEan13(rawCandidate)) {
-      if (!seen.has(rawCandidate)) {
-        seen.add(rawCandidate);
-        results.push({ code: rawCandidate, format: 'ean_13', valid: true });
-      }
-      continue;
-    }
-
-    // Check 12-digit UPC-A
-    if (rawCandidate.length === 12 && validateUpcA(rawCandidate)) {
-      if (!seen.has(rawCandidate)) {
-        seen.add(rawCandidate);
-        results.push({ code: rawCandidate, format: 'upc_a', valid: true });
-      }
-      continue;
-    }
-
-    // Check 8-digit EAN-8
-    if (rawCandidate.length === 8 && validateEan8(rawCandidate)) {
-      if (!seen.has(rawCandidate)) {
-        seen.add(rawCandidate);
-        results.push({ code: rawCandidate, format: 'ean_8', valid: true });
-      }
-      continue;
-    }
+  for (const match of candidateMatches) {
+    testCandidate(match);
   }
 
-  // 3. Fallback: Check if OCR split digits with spaces (e.g., "6 151100 010012")
-  if (results.length === 0) {
-    const digitsOnly = text.replace(/\D/g, '');
-    if (digitsOnly.length === 13 && validateEan13(digitsOnly) && !seen.has(digitsOnly)) {
-      results.push({ code: digitsOnly, format: 'ean_13', valid: true });
-    } else if (digitsOnly.length === 12 && validateUpcA(digitsOnly) && !seen.has(digitsOnly)) {
-      results.push({ code: digitsOnly, format: 'upc_a', valid: true });
-    } else if (digitsOnly.length === 8 && validateEan8(digitsOnly) && !seen.has(digitsOnly)) {
-      results.push({ code: digitsOnly, format: 'ean_8', valid: true });
+  const lookalikeMap: Record<string, string> = {
+    O: '0',
+    o: '0',
+    I: '1',
+    l: '1',
+    '|': '1',
+    S: '5',
+    s: '5',
+    B: '8',
+    Z: '2',
+    z: '2',
+  };
+
+  const mappedText = text.replace(/[OoIl|SsBZz]/g, (char) => lookalikeMap[char] || char);
+  const digitsOnly = mappedText.replace(/\D/g, '');
+
+  if (digitsOnly.length >= 8) {
+    for (let i = 0; i <= digitsOnly.length - 13; i++) {
+      testCandidate(digitsOnly.slice(i, i + 13));
+    }
+
+    for (let i = 0; i <= digitsOnly.length - 12; i++) {
+      testCandidate(digitsOnly.slice(i, i + 12));
+    }
+
+    for (let i = 0; i <= digitsOnly.length - 8; i++) {
+      testCandidate(digitsOnly.slice(i, i + 8));
     }
   }
 
