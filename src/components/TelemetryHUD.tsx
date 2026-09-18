@@ -96,9 +96,14 @@ export const TelemetryHUD: React.FC<TelemetryHUDProps> = ({ stats }) => {
               GS1 Modulo-10
             </span>
           </div>
-          <span className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1 font-mono">
-            <ScanText className="w-2.5 h-2.5 text-cyan-400" />
-            Micro-OCR: {stats.ocrStatus === 'processing' ? 'Active' : 'Armed'}
+          <span className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1 font-mono truncate">
+            <ScanText className="w-2.5 h-2.5 text-cyan-400 flex-shrink-0" />
+            <span className={stats.ocrStatus === 'ready' ? 'text-cyan-400' : 'text-amber-400'}>
+              OCR: {stats.ocrEngineStatus || (stats.ocrStatus === 'ready' ? 'Armed' : 'Loading...')}
+            </span>
+            {stats.ocrConfidence ? (
+              <span className="text-emerald-400 font-bold ml-1">({stats.ocrConfidence}%)</span>
+            ) : null}
           </span>
         </div>
       </div>

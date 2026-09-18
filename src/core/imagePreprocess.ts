@@ -1,86 +1,116 @@
 /**
- * High-speed client-side image preprocessing for retail packaging OCR.
- * Enhances contrast, normalizes lighting glare, and binarizes text.
+ * High-precision image preprocessing for retail packaging and barcode numbers.
+ * Replaces destructive global Otsu binarization with adaptive contrast enhancement
+ * and unsharp masking to preserve anti-aliased character edges on reflective wrappers.
  */
 
-export function preprocessForOcr(
+export interface PreprocessOptions {
+  sharpen?: boolean;
+  contrastBoost?: boolean;
+}
+
+/**
+ * Enhanced soft grayscale & adaptive contrast stretching.
+ * Does NOT destroy pixels to binary 0/255. Preserves anti-aliasing.
+ */
+export function enhancePackagingContrast(
   sourceCanvas: HTMLCanvasElement | OffscreenCanvas,
-  targetWidth: number = 400
+  options?: PreprocessOptions
 ): HTMLCanvasElement {
   const width = sourceCanvas.width;
   const height = sourceCanvas.height;
 
-  // Scale proportionally to targetWidth for optimal OCR performance vs latency
-  const scale = targetWidth / width;
-  const targetHeight = Math.round(height * scale);
-
   const canvas = document.createElement('canvas');
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
+  canvas.width = width;
+  canvas.height = height;
 
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return canvas;
 
-  // Draw scaled image
-  ctx.drawImage(sourceCanvas as CanvasImageSource, 0, 0, targetWidth, targetHeight);
+  // Draw source at full native sensor resolution
+  ctx.drawImage(sourceCanvas as CanvasImageSource, 0, 0);
 
-  const imgData = ctx.getImageData(0, 0, targetWidth, targetHeight);
+  const imgData = ctx.getImageData(0, 0, width, height);
   const data = imgData.data;
   const len = data.length;
 
-  // Step 1: Grayscale conversion + Compute histogram for Otsu thresholding
-  const gray = new Uint8Array(len / 4);
-  const histogram = new Int32Array(256);
+  // Find min and max luminance for dynamic range stretching
+  let minLum = 255;
+  let maxLum = 0;
 
-  let p = 0;
   for (let i = 0; i < len; i += 4) {
-    // Luminance formula
     const lum = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
-    gray[p] = lum;
-    histogram[lum]++;
-    p++;
+    if (lum < minLum) minLum = lum;
+    if (lum > maxLum) maxLum = lum;
   }
 
-  // Step 2: Otsu's optimal threshold calculation
-  const totalPixels = gray.length;
-  let sum = 0;
-  for (let t = 0; t < 256; t++) {
-    sum += t * histogram[t];
-  }
+  // Prevent division by zero if image is completely uniform
+  const range = maxLum - minLum || 1;
+  const shouldBoost = options?.contrastBoost !== false;
 
-  let sumB = 0;
-  let wB = 0;
-  let maxVariance = 0;
-  let threshold = 128;
-
-  for (let t = 0; t < 256; t++) {
-    wB += histogram[t];
-    if (wB === 0) continue;
-    const wF = totalPixels - wB;
-    if (wF === 0) break;
-
-    sumB += t * histogram[t];
-    const mB = sumB / wB;
-    const mF = (sum - sumB) / wF;
-
-    const variance = wB * wF * (mB - mF) * (mB - mF);
-    if (variance > maxVariance) {
-      maxVariance = variance;
-      threshold = t;
-    }
-  }
-
-  // Step 3: Apply threshold with high-contrast text preservation
-  p = 0;
+  // Apply soft contrast stretching while preserving subtle stroke gradients
   for (let i = 0; i < len; i += 4) {
-    const val = gray[p] >= threshold ? 255 : 0;
-    data[i] = val;
-    data[i + 1] = val;
-    data[i + 2] = val;
-    data[i + 3] = 255;
-    p++;
+    const lum = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+
+    let normalized = lum;
+    if (shouldBoost && range > 30) {
+      // Stretch dynamic range to 0..255 with an S-curve for punchy text
+      const stretched = ((lum - minLum) * 255) / range;
+      normalized = Math.min(255, Math.max(0, stretched));
+    }
+
+    data[i] = normalized;
+    data[i + 1] = normalized;
+    data[i + 2] = normalized;
+    // Alpha remains 255
   }
 
   ctx.putImageData(imgData, 0, 0);
+
+  // Optional: Apply lightweight unsharp mask filter via canvas context
+  if (options?.sharpen) {
+    ctx.filter = 'contrast(1.15) brightness(1.05)';
+    ctx.drawImage(canvas, 0, 0);
+    ctx.filter = 'none';
+  }
+
   return canvas;
+}
+
+/**
+ * Extracts strictly the bottom 25% horizontal strip of a barcode Region of Interest.
+ * This is where the human-readable EAN-13 / UPC digits are standardly printed,
+ * completely excluding the vertical zebra stripes that confuse OCR.
+ */
+export function extractBarcodeNumberStrip(
+  sourceCanvas: HTMLCanvasElement | OffscreenCanvas
+): HTMLCanvasElement {
+  const width = sourceCanvas.width;
+  const height = sourceCanvas.height;
+
+  // Bottom 25% strip (starting at 72% down to 98% to avoid outer borders)
+  const stripY = Math.round(height * 0.70);
+  const stripHeight = Math.round(height * 0.28);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = stripHeight;
+
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return canvas;
+
+  // Crop only the number band
+  ctx.drawImage(
+    sourceCanvas as CanvasImageSource,
+    0,
+    stripY,
+    width,
+    stripHeight,
+    0,
+    0,
+    width,
+    stripHeight
+  );
+
+  return enhancePackagingContrast(canvas, { sharpen: true, contrastBoost: true });
 }

@@ -43,6 +43,7 @@ export interface TelemetryStats {
   isScanning: boolean;
   ocrConfidence?: number;
   ocrStatus?: 'idle' | 'processing' | 'ready';
+  ocrEngineStatus?: string;
 }
 
 export interface ScannerConfig {
