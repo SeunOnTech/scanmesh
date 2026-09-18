@@ -7,6 +7,7 @@ import {
   Barcode,
   ScanText,
   VolumeX,
+  Sparkles,
 } from 'lucide-react';
 import type { ScanResult } from '../core/types';
 import { soundEngine } from '../core/audio';
@@ -31,7 +32,7 @@ export const ScanResultCard: React.FC<ScanResultCardProps> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Ignore clipboard failure
+      // Clipboard fallback
     }
   };
 
@@ -77,20 +78,27 @@ export const ScanResultCard: React.FC<ScanResultCardProps> = ({
               {isTextScan ? 'Product Text Scanned' : 'Barcode Decoded'}
             </h4>
             <span className="text-[11px] text-gray-400 font-mono">
-              {isTextScan ? `${lines.length} Line(s) Detected` : 'Hardware Optical Read'}
+              {isTextScan ? `${lines.length} Line(s) Extracted` : 'Hardware Optical Read'}
             </span>
           </div>
         </div>
 
-        <span
-          className={`px-3 py-1 rounded-full text-xs font-mono font-bold border uppercase ${
-            isTextScan
-              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-              : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-          }`}
-        >
-          {result.format.replace('_', '-')}
-        </span>
+        <div className="flex items-center gap-2">
+          {isTextScan && (
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+              <Sparkles className="w-2.5 h-2.5" /> High Precision
+            </span>
+          )}
+          <span
+            className={`px-3 py-1 rounded-full text-xs font-mono font-bold border uppercase ${
+              isTextScan
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+            }`}
+          >
+            {result.format.replace('_', '-')}
+          </span>
+        </div>
       </div>
 
       <div className="bg-gray-950/90 border border-gray-800 rounded-xl p-4 mb-4">
@@ -118,7 +126,7 @@ export const ScanResultCard: React.FC<ScanResultCardProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={handleCopy}
-            className="px-3.5 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold border border-gray-700 transition-colors flex items-center gap-1.5"
+            className="px-3.5 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold border border-gray-700 transition-colors flex items-center gap-1.5 active:scale-95"
           >
             {copied ? (
               <>
@@ -133,48 +141,34 @@ export const ScanResultCard: React.FC<ScanResultCardProps> = ({
             )}
           </button>
 
-          {isTextScan ? (
+          {isTextScan && (
             <button
               onClick={handleSpeak}
-              className="px-3.5 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold border border-gray-700 transition-colors flex items-center gap-1.5"
+              className="px-3.5 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold border border-gray-700 transition-colors flex items-center gap-1.5 active:scale-95"
               title="Read Aloud"
             >
               {isSpeaking ? (
                 <>
-                  <VolumeX className="w-3.5 h-3.5 text-rose-400" />
-                  <span className="text-rose-400">Stop</span>
+                  <VolumeX className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+                  <span className="text-cyan-400">Stop</span>
                 </>
               ) : (
                 <>
-                  <Volume2 className="w-3.5 h-3.5 text-cyan-400" />
+                  <Volume2 className="w-3.5 h-3.5" />
                   <span>Listen</span>
                 </>
               )}
             </button>
-          ) : (
-            <button
-              onClick={() => soundEngine.playSuccessBeep()}
-              className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 border border-gray-700 transition-colors"
-              title="Play Chime"
-            >
-              <Volume2 className="w-3.5 h-3.5" />
-            </button>
           )}
         </div>
 
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-mono text-gray-400">
-            {Math.round(result.latencyMs * 10) / 10}ms
-          </span>
-
-          <button
-            onClick={onReset}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-sans text-xs font-bold rounded-xl transition-all shadow-md flex items-center gap-1.5"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            Scan Next
-          </button>
-        </div>
+        <button
+          onClick={onReset}
+          className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-lg flex items-center gap-1.5 active:scale-95"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          <span>Scan Next</span>
+        </button>
       </div>
     </div>
   );

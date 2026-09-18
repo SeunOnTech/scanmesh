@@ -7,9 +7,51 @@ export interface OcrRecognitionResult {
   lines: string[];
   confidence: number;
   latencyMs: number;
+  wordCount: number;
 }
 
 export type OcrStatusListener = (status: OcrStatus, progress: number) => void;
+
+const KNOWN_ABBREVIATIONS = new Set([
+  'LTD', 'PLC', 'LLC', 'INC', 'MFG', 'EXP', 'BN', 'PROD',
+  'NET', 'WT', 'QTY', 'PCS', 'VOL', 'MAX', 'MIN', 'REG',
+  'NAFDAC', 'SON', 'ISO', 'FDA', 'CE', 'UK', 'US', 'NG',
+  'KGS', 'KG', 'GMS', 'GM', 'GR', 'MLS', 'ML', 'LTR', 'CL', 'OZ', 'MG'
+]);
+
+function isValidWord(rawText: string, confidence: number): boolean {
+  const cleaned = rawText.replace(/^[^\w]+|[^\w]+$/g, '');
+  if (!cleaned) return false;
+
+  const minConfidence = cleaned.length <= 2 ? 72 : 58;
+  if (confidence < minConfidence) return false;
+
+  if (cleaned.length === 1) {
+    return /^[AI0-9]$/i.test(cleaned) && confidence >= 80;
+  }
+
+  if (/^[\d.,%-]+$/.test(cleaned)) {
+    return /\d/.test(cleaned) && confidence >= 60;
+  }
+
+  const alphaOnly = cleaned.replace(/[^a-zA-Z]/g, '');
+  if (alphaOnly.length >= 4) {
+    const upper = alphaOnly.toUpperCase();
+    if (!/[AEIOUY]/.test(upper) && !KNOWN_ABBREVIATIONS.has(upper)) {
+      return false;
+    }
+  }
+
+  if (/(.)\1{3,}/.test(cleaned)) {
+    return false;
+  }
+
+  return true;
+}
+
+function cleanWordText(rawText: string): string {
+  return rawText.replace(/^[^\w(]+|[^\w).]+$/g, '').trim();
+}
 
 class OcrService {
   private worker: Worker | null = null;
@@ -65,7 +107,7 @@ class OcrService {
       });
 
       await this.worker.setParameters({
-        tessedit_pageseg_mode: PSM.SPARSE_TEXT,
+        tessedit_pageseg_mode: PSM.SINGLE_BLOCK,
       });
 
       this.notify('ready', 100);
@@ -93,24 +135,92 @@ class OcrService {
       const { data } = await this.worker.recognize(canvas as unknown as HTMLCanvasElement);
       const latencyMs = Math.round((performance.now() - start) * 10) / 10;
 
-      const rawText = data.text ? data.text.trim() : '';
-      const rawLines = rawText
-        .split(/[\r\n]+/)
-        .map((l: string) => l.trim())
-        .filter((l: string) => l.length >= 2 && /[a-zA-Z0-9]/.test(l));
+      interface ScannedWord {
+        text: string;
+        confidence: number;
+      }
+      interface ScannedLine {
+        words: ScannedWord[];
+      }
 
-      const cleanedLines = rawLines.filter(
-        (line: string) => !/^[^a-zA-Z0-9]+$/.test(line) && line.replace(/[^a-zA-Z]/g, '').length >= 1
-      );
+      const scannedLines: ScannedLine[] = [];
 
-      const fullText = cleanedLines.join('\n');
-      const confidence = Math.round(data.confidence || 0);
+      if (data.blocks && Array.isArray(data.blocks)) {
+        for (const block of data.blocks) {
+          if (block.paragraphs) {
+            for (const para of block.paragraphs) {
+              if (para.lines) {
+                for (const line of para.lines) {
+                  scannedLines.push({
+                    words: (line.words || []).map((w) => ({
+                      text: w.text || '',
+                      confidence: typeof w.confidence === 'number' ? w.confidence : 0,
+                    })),
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (scannedLines.length === 0 && data.text) {
+        const textLines = data.text.split(/[\r\n]+/);
+        for (const tl of textLines) {
+          const words = tl.trim().split(/\s+/).filter(Boolean);
+          if (words.length > 0) {
+            scannedLines.push({
+              words: words.map((w) => ({
+                text: w,
+                confidence: typeof data.confidence === 'number' ? data.confidence : 75,
+              })),
+            });
+          }
+        }
+      }
+
+      const validLines: string[] = [];
+      let totalConfidence = 0;
+      let totalValidWords = 0;
+      let totalCharCount = 0;
+
+      for (const line of scannedLines) {
+        const passingWords: string[] = [];
+
+        for (const w of line.words) {
+          if (isValidWord(w.text, w.confidence)) {
+            const cleaned = cleanWordText(w.text);
+            if (cleaned) {
+              passingWords.push(cleaned);
+              totalConfidence += w.confidence;
+              totalValidWords++;
+              totalCharCount += cleaned.length;
+            }
+          }
+        }
+
+        if (passingWords.length > 0) {
+          validLines.push(passingWords.join(' '));
+        }
+      }
+
+      if (totalValidWords === 0 || totalCharCount < 4 || validLines.length === 0) {
+        return null;
+      }
+
+      const avgConfidence = Math.round(totalConfidence / totalValidWords);
+      if (avgConfidence < 62) {
+        return null;
+      }
+
+      const fullText = validLines.join('\n');
 
       return {
         text: fullText,
-        lines: cleanedLines,
-        confidence,
+        lines: validLines,
+        confidence: avgConfidence,
         latencyMs,
+        wordCount: totalValidWords,
       };
     } catch (err) {
       console.warn('OCR recognition error:', err);

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Camera, FlipHorizontal, Zap, ZapOff, AlertCircle, ScanText } from 'lucide-react';
+import { Camera, FlipHorizontal, Zap, ZapOff, AlertCircle, ScanText, Sparkles } from 'lucide-react';
 import { BarcodeScannerService } from '../core/BarcodeScanner';
+import { triggerHaptic } from '../core/haptics';
 import type { ScanResult, TelemetryStats, ScanMode } from '../core/types';
 
 interface CameraViewfinderProps {
@@ -27,6 +28,8 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   const [hasTorch, setHasTorch] = useState<boolean>(false);
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
+  const [isCapturingText, setIsCapturingText] = useState<boolean>(false);
+  const [feedbackNotice, setFeedbackNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const service = new BarcodeScannerService(
@@ -36,7 +39,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
         onError: (err) => console.error('Scanner engine error:', err),
       },
       {
-        roiSize: 260,
+        roiSize: 280,
         debounceMs: 1500,
         mode,
       }
@@ -67,8 +70,8 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
       const constraints: MediaStreamConstraints = {
         video: {
           facingMode: { ideal: facingMode },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
         },
         audio: false,
       };
@@ -132,10 +135,27 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
     setIsTorchOn(false);
   };
 
+  const handleManualTextCapture = async () => {
+    if (isCapturingText || isLocked) return;
+    triggerHaptic('success');
+    setIsCapturingText(true);
+    setFeedbackNotice(null);
+
+    try {
+      const result = await scannerServiceRef.current?.scanTextNow();
+      if (!result) {
+        setFeedbackNotice('No distinct text found. Hold steady & align text in frame.');
+        setTimeout(() => setFeedbackNotice(null), 3000);
+      }
+    } finally {
+      setIsCapturingText(false);
+    }
+  };
+
   const isTextMode = mode === 'text';
 
   return (
-    <div className="relative w-full aspect-[4/3] sm:aspect-[16/9] max-h-[560px] bg-black rounded-2xl overflow-hidden shadow-2xl border border-gray-800">
+    <div className="relative w-full aspect-[4/3] sm:aspect-[16/9] max-h-[580px] bg-black rounded-2xl overflow-hidden shadow-2xl border border-gray-800">
       <video
         ref={videoRef}
         playsInline
@@ -146,8 +166,8 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
 
       {isInitializing && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-950/90 backdrop-blur-sm z-20">
-          <div className="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-          <p className="text-sm font-medium text-gray-300">Activating Optical Sensor...</p>
+          <div className="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3" />
+          <p className="text-sm font-medium text-gray-300 font-sans">Activating Optical Sensor...</p>
         </div>
       )}
 
@@ -170,39 +190,41 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" />
 
           <div
-            className={`relative w-[260px] h-[260px] rounded-2xl transition-all duration-300 ${
+            className={`relative w-[280px] h-[280px] rounded-2xl transition-all duration-300 ${
               isLocked
                 ? isTextMode
                   ? 'border-2 border-cyan-400 shadow-[0_0_35px_rgba(6,182,212,0.7)] bg-cyan-500/10'
                   : 'border-2 border-emerald-400 shadow-[0_0_35px_rgba(16,185,129,0.7)] bg-emerald-500/10'
+                : isCapturingText
+                ? 'border-2 border-cyan-300 shadow-[0_0_40px_rgba(6,182,212,0.9)] bg-cyan-400/20'
                 : 'border border-white/20 bg-transparent'
             }`}
           >
             <div
               className={`absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 rounded-tl-xl transition-colors ${
-                isLocked
-                  ? isTextMode ? 'border-cyan-400' : 'border-emerald-400'
+                isLocked || isCapturingText
+                  ? isTextMode || isCapturingText ? 'border-cyan-400' : 'border-emerald-400'
                   : isTextMode ? 'border-cyan-400' : 'border-emerald-500'
               }`}
             />
             <div
               className={`absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 rounded-tr-xl transition-colors ${
-                isLocked
-                  ? isTextMode ? 'border-cyan-400' : 'border-emerald-400'
+                isLocked || isCapturingText
+                  ? isTextMode || isCapturingText ? 'border-cyan-400' : 'border-emerald-400'
                   : isTextMode ? 'border-cyan-400' : 'border-emerald-500'
               }`}
             />
             <div
               className={`absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 rounded-bl-xl transition-colors ${
-                isLocked
-                  ? isTextMode ? 'border-cyan-400' : 'border-emerald-400'
+                isLocked || isCapturingText
+                  ? isTextMode || isCapturingText ? 'border-cyan-400' : 'border-emerald-400'
                   : isTextMode ? 'border-cyan-400' : 'border-emerald-500'
               }`}
             />
             <div
               className={`absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 rounded-br-xl transition-colors ${
-                isLocked
-                  ? isTextMode ? 'border-cyan-400' : 'border-emerald-400'
+                isLocked || isCapturingText
+                  ? isTextMode || isCapturingText ? 'border-cyan-400' : 'border-emerald-400'
                   : isTextMode ? 'border-cyan-400' : 'border-emerald-500'
               }`}
             />
@@ -210,7 +232,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             {!isLocked && (
               <div
                 className={`absolute left-2 right-2 h-[3px] shadow-[0_0_15px] animate-scanbeam ${
-                  isTextMode
+                  isTextMode || isCapturingText
                     ? 'bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-cyan-400'
                     : 'bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-emerald-400'
                 }`}
@@ -224,14 +246,29 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
                     ? isTextMode
                       ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
                       : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : isCapturingText
+                    ? 'bg-cyan-500/40 text-white border-cyan-400'
                     : 'bg-black/70 text-gray-300 border-white/10'
                 }`}
               >
                 {isLocked
                   ? isTextMode ? 'TEXT ACQUIRED' : 'TARGET ACQUIRED'
-                  : isTextMode ? 'ALIGN PACKAGING TEXT' : 'ALIGN BARCODE OR TEXT'}
+                  : isCapturingText
+                  ? 'ANALYZING HIGH-DPI FRAME...'
+                  : isTextMode
+                  ? 'ALIGN PACKAGING TEXT'
+                  : 'ALIGN BARCODE OR TEXT'}
               </span>
             </div>
+          </div>
+        </div>
+      )}
+
+      {feedbackNotice && (
+        <div className="absolute top-16 left-4 right-4 flex justify-center z-30 pointer-events-none animate-in fade-in slide-in-from-top-2">
+          <div className="bg-gray-950/90 border border-amber-500/50 text-amber-300 text-xs px-4 py-2 rounded-xl backdrop-blur-md shadow-xl flex items-center gap-2">
+            <Sparkles className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+            <span>{feedbackNotice}</span>
           </div>
         </div>
       )}
@@ -284,6 +321,34 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           <FlipHorizontal className="w-5 h-5" />
         </button>
       </div>
+
+      {!isLocked && (
+        <div className="absolute bottom-5 left-0 right-0 flex justify-center items-center z-10 pointer-events-auto">
+          <button
+            onClick={handleManualTextCapture}
+            disabled={isCapturingText}
+            className={`px-5 py-2.5 rounded-full font-bold text-xs tracking-wider uppercase transition-all shadow-xl flex items-center gap-2 border ${
+              isCapturingText
+                ? 'bg-cyan-500/40 border-cyan-400 text-white cursor-wait'
+                : isTextMode
+                ? 'bg-cyan-600 hover:bg-cyan-500 border-cyan-400/50 text-white shadow-cyan-600/30 active:scale-95'
+                : 'bg-gray-900/90 hover:bg-gray-800 border-white/20 text-white hover:border-cyan-400/60 active:scale-95'
+            }`}
+          >
+            {isCapturingText ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span>Reading Text...</span>
+              </>
+            ) : (
+              <>
+                <ScanText className="w-4 h-4 text-cyan-400" />
+                <span>Scan Text Now</span>
+              </>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 };

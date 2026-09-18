@@ -1,75 +1,100 @@
-/**
- * High-precision image preprocessing for retail packaging and barcode numbers.
- * Replaces destructive global Otsu binarization with adaptive contrast enhancement
- * and unsharp masking to preserve anti-aliased character edges on reflective wrappers.
- */
-
 export interface PreprocessOptions {
   sharpen?: boolean;
   contrastBoost?: boolean;
+  targetWidth?: number;
+  autoInvert?: boolean;
 }
 
-/**
- * Enhanced soft grayscale & adaptive contrast stretching.
- * Does NOT destroy pixels to binary 0/255. Preserves anti-aliasing.
- */
 export function enhancePackagingContrast(
   sourceCanvas: HTMLCanvasElement | OffscreenCanvas,
   options?: PreprocessOptions
 ): HTMLCanvasElement {
-  const width = sourceCanvas.width;
-  const height = sourceCanvas.height;
+  const srcWidth = sourceCanvas.width;
+  const srcHeight = sourceCanvas.height;
+
+  const targetW = options?.targetWidth || Math.max(800, srcWidth);
+  const scale = targetW / srcWidth;
+  const targetH = Math.round(srcHeight * scale);
 
   const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = targetW;
+  canvas.height = targetH;
 
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return canvas;
 
-  // Draw source at full native sensor resolution
-  ctx.drawImage(sourceCanvas as CanvasImageSource, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(sourceCanvas as CanvasImageSource, 0, 0, targetW, targetH);
 
-  const imgData = ctx.getImageData(0, 0, width, height);
+  const imgData = ctx.getImageData(0, 0, targetW, targetH);
   const data = imgData.data;
   const len = data.length;
 
-  // Find min and max luminance for dynamic range stretching
-  let minLum = 255;
-  let maxLum = 0;
+  const hist = new Uint32Array(256);
+  let totalBorderLum = 0;
+  let borderPixelCount = 0;
 
-  for (let i = 0; i < len; i += 4) {
-    const lum = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
-    if (lum < minLum) minLum = lum;
-    if (lum > maxLum) maxLum = lum;
+  const borderMarginX = Math.max(2, Math.floor(targetW * 0.05));
+  const borderMarginY = Math.max(2, Math.floor(targetH * 0.05));
+
+  for (let y = 0; y < targetH; y++) {
+    const isBorderY = y < borderMarginY || y >= targetH - borderMarginY;
+    const rowOffset = y * targetW * 4;
+
+    for (let x = 0; x < targetW; x++) {
+      const idx = rowOffset + x * 4;
+      const lum = (data[idx] * 77 + data[idx + 1] * 150 + data[idx + 2] * 29) >> 8;
+      hist[lum]++;
+
+      if (isBorderY || x < borderMarginX || x >= targetW - borderMarginX) {
+        totalBorderLum += lum;
+        borderPixelCount++;
+      }
+    }
   }
 
-  // Prevent division by zero if image is completely uniform
-  const range = maxLum - minLum || 1;
-  const shouldBoost = options?.contrastBoost !== false;
+  const totalPixels = targetW * targetH;
+  const p5Count = Math.floor(totalPixels * 0.04);
+  const p95Count = Math.floor(totalPixels * 0.96);
 
-  // Apply soft contrast stretching while preserving subtle stroke gradients
+  let accumulated = 0;
+  let minLum = 0;
+  let maxLum = 255;
+
+  for (let i = 0; i < 256; i++) {
+    accumulated += hist[i];
+    if (accumulated >= p5Count && minLum === 0) {
+      minLum = i;
+    }
+    if (accumulated >= p95Count) {
+      maxLum = i;
+      break;
+    }
+  }
+
+  const range = Math.max(20, maxLum - minLum);
+  const avgBorderLum = borderPixelCount > 0 ? totalBorderLum / borderPixelCount : 128;
+  const shouldInvert = options?.autoInvert !== false && avgBorderLum < 120;
+
   for (let i = 0; i < len; i += 4) {
     const lum = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+    let stretched = ((lum - minLum) * 255) / range;
+    stretched = Math.min(255, Math.max(0, stretched));
 
-    let normalized = lum;
-    if (shouldBoost && range > 30) {
-      // Stretch dynamic range to 0..255 with an S-curve for punchy text
-      const stretched = ((lum - minLum) * 255) / range;
-      normalized = Math.min(255, Math.max(0, stretched));
+    if (shouldInvert) {
+      stretched = 255 - stretched;
     }
 
-    data[i] = normalized;
-    data[i + 1] = normalized;
-    data[i + 2] = normalized;
-    // Alpha remains 255
+    data[i] = stretched;
+    data[i + 1] = stretched;
+    data[i + 2] = stretched;
   }
 
   ctx.putImageData(imgData, 0, 0);
 
-  // Optional: Apply lightweight unsharp mask filter via canvas context
-  if (options?.sharpen) {
-    ctx.filter = 'contrast(1.15) brightness(1.05)';
+  if (options?.sharpen !== false) {
+    ctx.filter = 'contrast(1.2) brightness(1.02)';
     ctx.drawImage(canvas, 0, 0);
     ctx.filter = 'none';
   }
@@ -77,18 +102,12 @@ export function enhancePackagingContrast(
   return canvas;
 }
 
-/**
- * Extracts strictly the bottom 25% horizontal strip of a barcode Region of Interest.
- * This is where the human-readable EAN-13 / UPC digits are standardly printed,
- * completely excluding the vertical zebra stripes that confuse OCR.
- */
 export function extractBarcodeNumberStrip(
   sourceCanvas: HTMLCanvasElement | OffscreenCanvas
 ): HTMLCanvasElement {
   const width = sourceCanvas.width;
   const height = sourceCanvas.height;
 
-  // Bottom 25% strip (starting at 72% down to 98% to avoid outer borders)
   const stripY = Math.round(height * 0.70);
   const stripHeight = Math.round(height * 0.28);
 
@@ -99,7 +118,6 @@ export function extractBarcodeNumberStrip(
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return canvas;
 
-  // Crop only the number band
   ctx.drawImage(
     sourceCanvas as CanvasImageSource,
     0,
@@ -112,5 +130,5 @@ export function extractBarcodeNumberStrip(
     stripHeight
   );
 
-  return enhancePackagingContrast(canvas, { sharpen: true, contrastBoost: true });
+  return enhancePackagingContrast(canvas, { sharpen: true, contrastBoost: true, targetWidth: 800 });
 }

@@ -38,12 +38,15 @@ export class BarcodeScannerService {
   private ocrEngineStatus: string = 'Initializing...';
 
   private lastOcrAttemptTime: number = 0;
-  private ocrIntervalMs: number = 280;
+  private ocrIntervalMs: number = 380;
   private lastBarcodeSeenTime: number = 0;
 
   private lastScannedCode: string | null = null;
   private lastScanTime: number = 0;
   private debounceMs: number = 1500;
+
+  private candidateTextBuffer: string | null = null;
+  private candidateMatches: number = 0;
 
   private callbacks: BarcodeScannerCallbacks;
   private formats: BarcodeFormat[];
@@ -85,6 +88,8 @@ export class BarcodeScannerService {
   public setMode(mode: ScanMode) {
     this.scanMode = mode;
     this.resetLock();
+    this.candidateTextBuffer = null;
+    this.candidateMatches = 0;
     this.emitTelemetry(0);
   }
 
@@ -126,7 +131,7 @@ export class BarcodeScannerService {
       } else if (status === 'ready') {
         this.ocrEngineStatus = 'Armed (Ready)';
       } else if (status === 'processing') {
-        this.ocrEngineStatus = 'Recognizing...';
+        this.ocrEngineStatus = 'Analyzing Text...';
       } else if (status === 'error') {
         this.ocrEngineStatus = 'Error (Retrying)';
       }
@@ -224,6 +229,8 @@ export class BarcodeScannerService {
     if (this.isRunning) return;
     this.isRunning = true;
     this.lastScannedCode = null;
+    this.candidateTextBuffer = null;
+    this.candidateMatches = 0;
     this.scheduleNextFrame();
   }
 
@@ -239,6 +246,8 @@ export class BarcodeScannerService {
   public resetLock() {
     this.lastScannedCode = null;
     this.lastScanTime = 0;
+    this.candidateTextBuffer = null;
+    this.candidateMatches = 0;
   }
 
   private scheduleNextFrame() {
@@ -250,27 +259,20 @@ export class BarcodeScannerService {
     });
   }
 
-  private async captureAndProcess() {
-    if (!this.isRunning || !this.videoElement) {
-      return;
-    }
-
+  private getCropCanvas(): HTMLCanvasElement | null {
+    if (!this.videoElement) return null;
     const video = this.videoElement;
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      return;
-    }
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return null;
 
     const videoWidth = video.videoWidth;
     const videoHeight = video.videoHeight;
-    if (videoWidth === 0 || videoHeight === 0) return;
+    if (videoWidth === 0 || videoHeight === 0) return null;
 
     const minDimension = Math.min(videoWidth, videoHeight);
-    const cropRatio = Math.min(0.85, Math.max(0.45, this.roiSize / 380));
+    const cropRatio = Math.min(0.88, Math.max(0.48, this.roiSize / 380));
     const cropSize = Math.round(minDimension * cropRatio);
     const sx = Math.max(0, Math.round((videoWidth - cropSize) / 2));
     const sy = Math.max(0, Math.round((videoHeight - cropSize) / 2));
-
-    const now = performance.now();
 
     if (!this.fullCropCanvas) {
       this.fullCropCanvas = document.createElement('canvas');
@@ -282,15 +284,27 @@ export class BarcodeScannerService {
       this.fullCropCanvas.height = cropSize;
     }
 
-    if (!this.fullCropCtx) return;
+    if (!this.fullCropCtx) return null;
     this.fullCropCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, cropSize, cropSize);
+    return this.fullCropCanvas;
+  }
+
+  private async captureAndProcess() {
+    if (!this.isRunning || !this.videoElement) {
+      return;
+    }
+
+    const cropCanvas = this.getCropCanvas();
+    if (!cropCanvas) return;
+
+    const now = performance.now();
 
     if (this.scanMode !== 'text' && !this.isProcessingBarcode && this.worker) {
       this.isProcessingBarcode = true;
       try {
         if ('createImageBitmap' in window) {
-          const targetW = Math.min(520, cropSize);
-          const bitmap = await createImageBitmap(this.fullCropCanvas, {
+          const targetW = Math.min(520, cropCanvas.width);
+          const bitmap = await createImageBitmap(cropCanvas, {
             resizeWidth: targetW,
             resizeHeight: targetW,
             resizeQuality: 'medium',
@@ -303,14 +317,14 @@ export class BarcodeScannerService {
     }
 
     const shouldRunOcr =
-      (this.scanMode === 'text' || now - this.lastBarcodeSeenTime > 200) &&
+      (this.scanMode === 'text' || now - this.lastBarcodeSeenTime > 500) &&
       now - this.lastOcrAttemptTime > this.ocrIntervalMs &&
       !ocrService.busy &&
       ocrService.ready;
 
     if (shouldRunOcr) {
       this.lastOcrAttemptTime = now;
-      this.runOcrPass(this.fullCropCanvas);
+      this.runOcrPass(cropCanvas);
     }
   }
 
@@ -320,38 +334,89 @@ export class BarcodeScannerService {
       const enhancedCanvas = enhancePackagingContrast(nativeCropCanvas, {
         sharpen: true,
         contrastBoost: true,
+        targetWidth: 850,
       });
 
       const ocrResult = await ocrService.recognizeText(enhancedCanvas);
-      if (ocrResult && ocrResult.text.length >= 3 && ocrResult.lines.length > 0) {
+      if (ocrResult && ocrResult.lines.length > 0 && ocrResult.confidence >= 68) {
         this.lastOcrConfidence = ocrResult.confidence;
 
         const isDuplicate =
           this.lastScannedCode === ocrResult.text &&
           now - this.lastScanTime < this.debounceMs;
 
-        if (!isDuplicate) {
-          this.lastScannedCode = ocrResult.text;
-          this.lastScanTime = now;
+        if (isDuplicate) return;
 
-          soundEngine.playSuccessBeep();
-          triggerHaptic('success');
+        if (this.scanMode === 'text') {
+          this.commitTextResult(ocrResult);
+          return;
+        }
 
-          const scanResult: ScanResult = {
-            rawValue: ocrResult.text,
-            format: 'TEXT',
-            source: 'PACKAGING_OCR_TEXT',
-            lines: ocrResult.lines,
-            timestamp: Date.now(),
-            latencyMs: ocrResult.latencyMs,
-          };
-
-          this.callbacks.onDetected(scanResult);
+        if (this.candidateTextBuffer === ocrResult.text) {
+          this.candidateMatches++;
+          if (this.candidateMatches >= 1) {
+            this.commitTextResult(ocrResult);
+          }
+        } else {
+          this.candidateTextBuffer = ocrResult.text;
+          this.candidateMatches = 0;
         }
       }
     } catch (err) {
       console.warn('OCR pass error:', err);
     }
+  }
+
+  public async scanTextNow(): Promise<ScanResult | null> {
+    const cropCanvas = this.getCropCanvas();
+    if (!cropCanvas) return null;
+
+    try {
+      const enhancedCanvas = enhancePackagingContrast(cropCanvas, {
+        sharpen: true,
+        contrastBoost: true,
+        targetWidth: 900,
+      });
+
+      const ocrResult = await ocrService.recognizeText(enhancedCanvas);
+      if (ocrResult && ocrResult.lines.length > 0) {
+        const scanResult = this.commitTextResult(ocrResult);
+        return scanResult;
+      }
+      return null;
+    } catch (err) {
+      console.warn('Manual text capture error:', err);
+      return null;
+    }
+  }
+
+  private commitTextResult(ocrResult: {
+    text: string;
+    lines: string[];
+    confidence: number;
+    latencyMs: number;
+    wordCount: number;
+  }): ScanResult {
+    const now = performance.now();
+    this.lastScannedCode = ocrResult.text;
+    this.lastScanTime = now;
+    this.candidateTextBuffer = null;
+    this.candidateMatches = 0;
+
+    soundEngine.playSuccessBeep();
+    triggerHaptic('success');
+
+    const scanResult: ScanResult = {
+      rawValue: ocrResult.text,
+      format: 'TEXT',
+      source: 'PACKAGING_OCR_TEXT',
+      lines: ocrResult.lines,
+      timestamp: Date.now(),
+      latencyMs: ocrResult.latencyMs,
+    };
+
+    this.callbacks.onDetected(scanResult);
+    return scanResult;
   }
 
   public destroy() {
