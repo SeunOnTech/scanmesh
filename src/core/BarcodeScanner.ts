@@ -1,6 +1,7 @@
 import type {
   BarcodeFormat,
   ScanResult,
+  ScanMode,
   TelemetryStats,
   WorkerInMessage,
   WorkerOutMessage,
@@ -8,11 +9,7 @@ import type {
 import { soundEngine } from './audio';
 import { triggerHaptic } from './haptics';
 import { ocrService } from './ocrService';
-import {
-  extractBarcodeNumberStrip,
-  enhancePackagingContrast,
-} from './imagePreprocess';
-import { catalogService } from './catalogService';
+import { enhancePackagingContrast } from './imagePreprocess';
 
 export interface BarcodeScannerCallbacks {
   onDetected: (result: ScanResult) => void;
@@ -24,15 +21,14 @@ export class BarcodeScannerService {
   private worker: Worker | null = null;
   private videoElement: HTMLVideoElement | null = null;
 
-  // High-Resolution Native Canvases (No destructive downscaling)
   private fullCropCanvas: HTMLCanvasElement | null = null;
   private fullCropCtx: CanvasRenderingContext2D | null = null;
 
   private isRunning: boolean = false;
   private isProcessingBarcode: boolean = false;
   private animationFrameId: number | null = null;
+  private scanMode: ScanMode = 'auto';
 
-  // Telemetry & Status
   private frameCount: number = 0;
   private lastFpsUpdateTime: number = performance.now();
   private currentFps: number = 0;
@@ -41,13 +37,10 @@ export class BarcodeScannerService {
   private lastOcrConfidence: number = 0;
   private ocrEngineStatus: string = 'Initializing...';
 
-  // Interleaving & Scheduling
   private lastOcrAttemptTime: number = 0;
-  private ocrIntervalMs: number = 320;
+  private ocrIntervalMs: number = 280;
   private lastBarcodeSeenTime: number = 0;
-  private ocrPassAlternator: boolean = false; // Alternates between number-strip & packaging text
 
-  // Debounce & Lock
   private lastScannedCode: string | null = null;
   private lastScanTime: number = 0;
   private debounceMs: number = 1500;
@@ -63,6 +56,7 @@ export class BarcodeScannerService {
       formats?: BarcodeFormat[];
       roiSize?: number;
       debounceMs?: number;
+      mode?: ScanMode;
     }
   ) {
     this.callbacks = callbacks;
@@ -80,9 +74,22 @@ export class BarcodeScannerService {
     if (options?.debounceMs !== undefined) {
       this.debounceMs = options.debounceMs;
     }
+    if (options?.mode) {
+      this.scanMode = options.mode;
+    }
 
     this.initWorker();
     this.initOcr();
+  }
+
+  public setMode(mode: ScanMode) {
+    this.scanMode = mode;
+    this.resetLock();
+    this.emitTelemetry(0);
+  }
+
+  public getMode(): ScanMode {
+    return this.scanMode;
   }
 
   private initWorker() {
@@ -143,7 +150,7 @@ export class BarcodeScannerService {
 
       this.recordLatency(latencyMs);
 
-      if (success && result) {
+      if (success && result && this.scanMode !== 'text') {
         this.lastBarcodeSeenTime = performance.now();
         const now = performance.now();
         const isDuplicate =
@@ -157,20 +164,16 @@ export class BarcodeScannerService {
           soundEngine.playSuccessBeep();
           triggerHaptic('success');
 
-          catalogService.resolveBarcode(result.rawValue).then((product) => {
-            const scanResult: ScanResult = {
-              rawValue: result.rawValue,
-              format: result.format,
-              source: 'HARDWARE_BARCODE',
-              modulo10Validated: true,
-              product: product || undefined,
-              cornerPoints: result.cornerPoints,
-              timestamp: Date.now(),
-              latencyMs,
-            };
+          const scanResult: ScanResult = {
+            rawValue: result.rawValue,
+            format: result.format,
+            source: 'HARDWARE_BARCODE',
+            cornerPoints: result.cornerPoints,
+            timestamp: Date.now(),
+            latencyMs,
+          };
 
-            this.callbacks.onDetected(scanResult);
-          });
+          this.callbacks.onDetected(scanResult);
         }
       }
 
@@ -261,7 +264,6 @@ export class BarcodeScannerService {
     const videoHeight = video.videoHeight;
     if (videoWidth === 0 || videoHeight === 0) return;
 
-    // Calculate center Region of Interest at FULL NATIVE SENSOR RESOLUTION
     const minDimension = Math.min(videoWidth, videoHeight);
     const cropRatio = Math.min(0.85, Math.max(0.45, this.roiSize / 380));
     const cropSize = Math.round(minDimension * cropRatio);
@@ -270,7 +272,6 @@ export class BarcodeScannerService {
 
     const now = performance.now();
 
-    // Prepare full-resolution native crop canvas
     if (!this.fullCropCanvas) {
       this.fullCropCanvas = document.createElement('canvas');
       this.fullCropCanvas.width = cropSize;
@@ -284,7 +285,7 @@ export class BarcodeScannerService {
     if (!this.fullCropCtx) return;
     this.fullCropCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, cropSize, cropSize);
 
-    if (!this.isProcessingBarcode && this.worker) {
+    if (this.scanMode !== 'text' && !this.isProcessingBarcode && this.worker) {
       this.isProcessingBarcode = true;
       try {
         if ('createImageBitmap' in window) {
@@ -302,167 +303,54 @@ export class BarcodeScannerService {
     }
 
     const shouldRunOcr =
-      now - this.lastBarcodeSeenTime > 180 &&
+      (this.scanMode === 'text' || now - this.lastBarcodeSeenTime > 200) &&
       now - this.lastOcrAttemptTime > this.ocrIntervalMs &&
       !ocrService.busy &&
       ocrService.ready;
 
     if (shouldRunOcr) {
       this.lastOcrAttemptTime = now;
-      this.ocrPassAlternator = !this.ocrPassAlternator;
-      this.runHighPrecisionOcrPass(this.fullCropCanvas, this.ocrPassAlternator);
+      this.runOcrPass(this.fullCropCanvas);
     }
   }
 
-  private async runHighPrecisionOcrPass(
-    nativeCropCanvas: HTMLCanvasElement,
-    runPackagingPass: boolean
-  ) {
+  private async runOcrPass(nativeCropCanvas: HTMLCanvasElement) {
     try {
       const now = performance.now();
+      const enhancedCanvas = enhancePackagingContrast(nativeCropCanvas, {
+        sharpen: true,
+        contrastBoost: true,
+      });
 
-      if (!runPackagingPass) {
-        const numberStripCanvas = extractBarcodeNumberStrip(nativeCropCanvas);
-        const ocrResult = await ocrService.recognizeNumberStrip(numberStripCanvas);
+      const ocrResult = await ocrService.recognizeText(enhancedCanvas);
+      if (ocrResult && ocrResult.text.length >= 3 && ocrResult.lines.length > 0) {
+        this.lastOcrConfidence = ocrResult.confidence;
 
-        if (ocrResult && ocrResult.validatedCodes.length > 0) {
-          const topCode = ocrResult.validatedCodes[0];
-          const isDuplicate =
-            this.lastScannedCode === topCode.code &&
-            now - this.lastScanTime < this.debounceMs;
+        const isDuplicate =
+          this.lastScannedCode === ocrResult.text &&
+          now - this.lastScanTime < this.debounceMs;
 
-          if (!isDuplicate) {
-            this.lastScannedCode = topCode.code;
-            this.lastScanTime = now;
-            this.lastOcrConfidence = ocrResult.confidence;
+        if (!isDuplicate) {
+          this.lastScannedCode = ocrResult.text;
+          this.lastScanTime = now;
 
-            soundEngine.playSuccessBeep();
-            triggerHaptic('success');
+          soundEngine.playSuccessBeep();
+          triggerHaptic('success');
 
-            const product = await catalogService.resolveBarcode(topCode.code);
+          const scanResult: ScanResult = {
+            rawValue: ocrResult.text,
+            format: 'TEXT',
+            source: 'PACKAGING_OCR_TEXT',
+            lines: ocrResult.lines,
+            timestamp: Date.now(),
+            latencyMs: ocrResult.latencyMs,
+          };
 
-            const scanResult: ScanResult = {
-              rawValue: topCode.code,
-              format: topCode.format,
-              source: 'MICRO_OCR_DIGITS',
-              modulo10Validated: true,
-              product: product || undefined,
-              ocrText: ocrResult.rawText,
-              timestamp: Date.now(),
-              latencyMs: ocrResult.latencyMs,
-            };
-
-            this.callbacks.onDetected(scanResult);
-            return;
-          }
-        }
-      } else {
-        const enhancedCanvas = enhancePackagingContrast(nativeCropCanvas, {
-          sharpen: true,
-          contrastBoost: true,
-        });
-
-        const ocrResult = await ocrService.recognizePackagingText(enhancedCanvas);
-
-        if (ocrResult) {
-          this.lastOcrConfidence = ocrResult.confidence;
-
-          if (ocrResult.validatedCodes.length > 0) {
-            const topCode = ocrResult.validatedCodes[0];
-            const isDuplicate =
-              this.lastScannedCode === topCode.code &&
-              now - this.lastScanTime < this.debounceMs;
-
-            if (!isDuplicate) {
-              this.lastScannedCode = topCode.code;
-              this.lastScanTime = now;
-
-              soundEngine.playSuccessBeep();
-              triggerHaptic('success');
-
-              const product = await catalogService.resolveBarcode(topCode.code);
-
-              const scanResult: ScanResult = {
-                rawValue: topCode.code,
-                format: topCode.format,
-                source: 'MICRO_OCR_DIGITS',
-                modulo10Validated: true,
-                product: product || undefined,
-                ocrText: ocrResult.rawText,
-                timestamp: Date.now(),
-                latencyMs: ocrResult.latencyMs,
-              };
-
-              this.callbacks.onDetected(scanResult);
-              return;
-            }
-          }
-
-          const textMatchedProduct = catalogService.resolveByText(ocrResult.rawText);
-          if (textMatchedProduct) {
-            const isDuplicate =
-              this.lastScannedCode === textMatchedProduct.barcode &&
-              now - this.lastScanTime < this.debounceMs;
-
-            if (!isDuplicate) {
-              this.lastScannedCode = textMatchedProduct.barcode;
-              this.lastScanTime = now;
-
-              soundEngine.playSuccessBeep();
-              triggerHaptic('success');
-
-              const scanResult: ScanResult = {
-                rawValue: textMatchedProduct.barcode,
-                format: 'PACKAGING_MATCH',
-                source: 'PACKAGING_OCR_TEXT',
-                product: textMatchedProduct,
-                extractedLabel: {
-                  title: textMatchedProduct.name,
-                  size: textMatchedProduct.size,
-                },
-                ocrText: ocrResult.rawText,
-                timestamp: Date.now(),
-                latencyMs: ocrResult.latencyMs,
-              };
-
-              this.callbacks.onDetected(scanResult);
-              return;
-            }
-          }
-
-          if (ocrResult.extractedLabel.titleCandidate && ocrResult.confidence > 25) {
-            const title = ocrResult.extractedLabel.titleCandidate;
-            const isDuplicate =
-              this.lastScannedCode === title &&
-              now - this.lastScanTime < this.debounceMs;
-
-            if (!isDuplicate) {
-              this.lastScannedCode = title;
-              this.lastScanTime = now;
-
-              soundEngine.playSuccessBeep();
-              triggerHaptic('success');
-
-              const scanResult: ScanResult = {
-                rawValue: title,
-                format: 'PACKAGING_TEXT',
-                source: 'PACKAGING_OCR_TEXT',
-                ocrText: ocrResult.rawText,
-                extractedLabel: {
-                  title: ocrResult.extractedLabel.titleCandidate,
-                  size: ocrResult.extractedLabel.sizeCandidate,
-                },
-                timestamp: Date.now(),
-                latencyMs: ocrResult.latencyMs,
-              };
-
-              this.callbacks.onDetected(scanResult);
-            }
-          }
+          this.callbacks.onDetected(scanResult);
         }
       }
     } catch (err) {
-      console.warn('High-precision OCR pass error:', err);
+      console.warn('OCR pass error:', err);
     }
   }
 

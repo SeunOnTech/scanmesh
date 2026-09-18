@@ -15,46 +15,15 @@ export interface Point {
 
 export type DetectionSource =
   | 'HARDWARE_BARCODE'
-  | 'MICRO_OCR_DIGITS'
   | 'PACKAGING_OCR_TEXT';
 
-export interface ProductMetadata {
-  id: string;
-  barcode: string;
-  name: string;
-  brand: string;
-  category: string;
-  subCategory?: string;
-  size?: string;
-  suggestedRetailPrice: number;
-  costPrice?: number;
-  imageUrl?: string;
-  isMasterVerified: boolean;
-}
-
-export interface StockedItem {
-  id: string;
-  barcode: string;
-  name: string;
-  brand: string;
-  category: string;
-  size?: string;
-  sellingPrice: number;
-  quantity: number;
-  stockedAt: number;
-}
+export type ScanMode = 'auto' | 'text';
 
 export interface ScanResult {
   rawValue: string;
-  format: BarcodeFormat | string;
+  format: BarcodeFormat | 'TEXT' | string;
   source: DetectionSource;
-  modulo10Validated?: boolean;
-  product?: ProductMetadata;
-  ocrText?: string;
-  extractedLabel?: {
-    title?: string;
-    size?: string;
-  };
+  lines?: string[];
   cornerPoints?: Point[];
   timestamp: number;
   latencyMs: number;
