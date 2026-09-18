@@ -18,11 +18,38 @@ export type DetectionSource =
   | 'MICRO_OCR_DIGITS'
   | 'PACKAGING_OCR_TEXT';
 
+export interface ProductMetadata {
+  id: string;
+  barcode: string;
+  name: string;
+  brand: string;
+  category: string;
+  subCategory?: string;
+  size?: string;
+  suggestedRetailPrice: number;
+  costPrice?: number;
+  imageUrl?: string;
+  isMasterVerified: boolean;
+}
+
+export interface StockedItem {
+  id: string;
+  barcode: string;
+  name: string;
+  brand: string;
+  category: string;
+  size?: string;
+  sellingPrice: number;
+  quantity: number;
+  stockedAt: number;
+}
+
 export interface ScanResult {
   rawValue: string;
   format: BarcodeFormat | string;
   source: DetectionSource;
   modulo10Validated?: boolean;
+  product?: ProductMetadata;
   ocrText?: string;
   extractedLabel?: {
     title?: string;

@@ -73,8 +73,7 @@ class OcrService {
         },
       });
 
-      // Default to single line digits mode for rapid barcode numbers
-      await this.setMode('digits');
+      await this.setMode('text');
       this.notify('ready', 100);
     } catch (err) {
       console.error('OCR initialization failed:', err);
@@ -89,12 +88,10 @@ class OcrService {
     try {
       if (mode === 'digits') {
         await this.worker.setParameters({
-          tessedit_char_whitelist: '0123456789 ',
           tessedit_pageseg_mode: PSM.SINGLE_LINE,
         });
       } else {
         await this.worker.setParameters({
-          tessedit_char_whitelist: '',
           tessedit_pageseg_mode: PSM.SPARSE_TEXT,
         });
       }

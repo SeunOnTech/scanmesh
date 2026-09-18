@@ -12,6 +12,7 @@ import {
   extractBarcodeNumberStrip,
   enhancePackagingContrast,
 } from './imagePreprocess';
+import { catalogService } from './catalogService';
 
 export interface BarcodeScannerCallbacks {
   onDetected: (result: ScanResult) => void;
@@ -156,17 +157,20 @@ export class BarcodeScannerService {
           soundEngine.playSuccessBeep();
           triggerHaptic('success');
 
-          const scanResult: ScanResult = {
-            rawValue: result.rawValue,
-            format: result.format,
-            source: 'HARDWARE_BARCODE',
-            modulo10Validated: true,
-            cornerPoints: result.cornerPoints,
-            timestamp: Date.now(),
-            latencyMs,
-          };
+          catalogService.resolveBarcode(result.rawValue).then((product) => {
+            const scanResult: ScanResult = {
+              rawValue: result.rawValue,
+              format: result.format,
+              source: 'HARDWARE_BARCODE',
+              modulo10Validated: true,
+              product: product || undefined,
+              cornerPoints: result.cornerPoints,
+              timestamp: Date.now(),
+              latencyMs,
+            };
 
-          this.callbacks.onDetected(scanResult);
+            this.callbacks.onDetected(scanResult);
+          });
         }
       }
 
@@ -280,12 +284,10 @@ export class BarcodeScannerService {
     if (!this.fullCropCtx) return;
     this.fullCropCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, cropSize, cropSize);
 
-    // TRACK 1: Real-time Barcode Detection via Worker
     if (!this.isProcessingBarcode && this.worker) {
       this.isProcessingBarcode = true;
       try {
         if ('createImageBitmap' in window) {
-          // Send crisp 500px bitmap to barcode worker
           const targetW = Math.min(520, cropSize);
           const bitmap = await createImageBitmap(this.fullCropCanvas, {
             resizeWidth: targetW,
@@ -299,7 +301,6 @@ export class BarcodeScannerService {
       }
     }
 
-    // TRACK 2: High-Precision Native OCR (when no barcode was seen in the last 180ms)
     const shouldRunOcr =
       now - this.lastBarcodeSeenTime > 180 &&
       now - this.lastOcrAttemptTime > this.ocrIntervalMs &&
@@ -321,8 +322,6 @@ export class BarcodeScannerService {
       const now = performance.now();
 
       if (!runPackagingPass) {
-        // PASS 1: Dedicated Barcode Number Strip (Bottom 25% horizontal band)
-        // Highly targeted, isolates only the 13 OCR-B digits under barcode lines
         const numberStripCanvas = extractBarcodeNumberStrip(nativeCropCanvas);
         const ocrResult = await ocrService.recognizeNumberStrip(numberStripCanvas);
 
@@ -340,11 +339,14 @@ export class BarcodeScannerService {
             soundEngine.playSuccessBeep();
             triggerHaptic('success');
 
+            const product = await catalogService.resolveBarcode(topCode.code);
+
             const scanResult: ScanResult = {
               rawValue: topCode.code,
               format: topCode.format,
               source: 'MICRO_OCR_DIGITS',
               modulo10Validated: true,
+              product: product || undefined,
               ocrText: ocrResult.rawText,
               timestamp: Date.now(),
               latencyMs: ocrResult.latencyMs,
@@ -355,7 +357,6 @@ export class BarcodeScannerService {
           }
         }
       } else {
-        // PASS 2: Packaging Text Pass (Full center crop with soft contrast enhancement)
         const enhancedCanvas = enhancePackagingContrast(nativeCropCanvas, {
           sharpen: true,
           contrastBoost: true,
@@ -366,7 +367,6 @@ export class BarcodeScannerService {
         if (ocrResult) {
           this.lastOcrConfidence = ocrResult.confidence;
 
-          // Check if it caught valid barcode numbers anywhere in the text
           if (ocrResult.validatedCodes.length > 0) {
             const topCode = ocrResult.validatedCodes[0];
             const isDuplicate =
@@ -380,11 +380,14 @@ export class BarcodeScannerService {
               soundEngine.playSuccessBeep();
               triggerHaptic('success');
 
+              const product = await catalogService.resolveBarcode(topCode.code);
+
               const scanResult: ScanResult = {
                 rawValue: topCode.code,
                 format: topCode.format,
                 source: 'MICRO_OCR_DIGITS',
                 modulo10Validated: true,
+                product: product || undefined,
                 ocrText: ocrResult.rawText,
                 timestamp: Date.now(),
                 latencyMs: ocrResult.latencyMs,
@@ -395,8 +398,39 @@ export class BarcodeScannerService {
             }
           }
 
-          // Or check if strong packaging title/size candidate is detected
-          if (ocrResult.extractedLabel.titleCandidate && ocrResult.confidence > 40) {
+          const textMatchedProduct = catalogService.resolveByText(ocrResult.rawText);
+          if (textMatchedProduct) {
+            const isDuplicate =
+              this.lastScannedCode === textMatchedProduct.barcode &&
+              now - this.lastScanTime < this.debounceMs;
+
+            if (!isDuplicate) {
+              this.lastScannedCode = textMatchedProduct.barcode;
+              this.lastScanTime = now;
+
+              soundEngine.playSuccessBeep();
+              triggerHaptic('success');
+
+              const scanResult: ScanResult = {
+                rawValue: textMatchedProduct.barcode,
+                format: 'PACKAGING_MATCH',
+                source: 'PACKAGING_OCR_TEXT',
+                product: textMatchedProduct,
+                extractedLabel: {
+                  title: textMatchedProduct.name,
+                  size: textMatchedProduct.size,
+                },
+                ocrText: ocrResult.rawText,
+                timestamp: Date.now(),
+                latencyMs: ocrResult.latencyMs,
+              };
+
+              this.callbacks.onDetected(scanResult);
+              return;
+            }
+          }
+
+          if (ocrResult.extractedLabel.titleCandidate && ocrResult.confidence > 25) {
             const title = ocrResult.extractedLabel.titleCandidate;
             const isDuplicate =
               this.lastScannedCode === title &&
