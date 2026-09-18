@@ -1,4 +1,5 @@
 import { createWorker, PSM, type Worker } from 'tesseract.js';
+import { invertCanvas } from './imagePreprocess';
 
 export type OcrStatus = 'uninitialized' | 'loading' | 'ready' | 'processing' | 'error';
 
@@ -16,22 +17,23 @@ const KNOWN_ABBREVIATIONS = new Set([
   'LTD', 'PLC', 'LLC', 'INC', 'MFG', 'EXP', 'BN', 'PROD',
   'NET', 'WT', 'QTY', 'PCS', 'VOL', 'MAX', 'MIN', 'REG',
   'NAFDAC', 'SON', 'ISO', 'FDA', 'CE', 'UK', 'US', 'NG',
-  'KGS', 'KG', 'GMS', 'GM', 'GR', 'MLS', 'ML', 'LTR', 'CL', 'OZ', 'MG'
+  'KGS', 'KG', 'GMS', 'GM', 'GR', 'MLS', 'ML', 'LTR', 'CL', 'OZ', 'MG',
+  'PET', 'WATER', 'SPRING', 'DRINKING', 'TABLE', 'PURE', 'LIFE'
 ]);
 
 function isValidWord(rawText: string, confidence: number): boolean {
   const cleaned = rawText.replace(/^[^\w]+|[^\w]+$/g, '');
   if (!cleaned) return false;
 
-  const minConfidence = cleaned.length <= 2 ? 72 : 58;
+  const minConfidence = cleaned.length <= 2 ? 65 : 45;
   if (confidence < minConfidence) return false;
 
   if (cleaned.length === 1) {
-    return /^[AI0-9]$/i.test(cleaned) && confidence >= 80;
+    return /^[AI0-9]$/i.test(cleaned) && confidence >= 75;
   }
 
   if (/^[\d.,%-]+$/.test(cleaned)) {
-    return /\d/.test(cleaned) && confidence >= 60;
+    return /\d/.test(cleaned) && confidence >= 50;
   }
 
   const alphaOnly = cleaned.replace(/[^a-zA-Z]/g, '');
@@ -51,6 +53,81 @@ function isValidWord(rawText: string, confidence: number): boolean {
 
 function cleanWordText(rawText: string): string {
   return rawText.replace(/^[^\w(]+|[^\w).]+$/g, '').trim();
+}
+
+interface ScannedWord {
+  text: string;
+  confidence: number;
+}
+
+interface ScannedLine {
+  words: ScannedWord[];
+}
+
+function parseTesseractData(data: any): { lines: string[]; confidence: number; totalWords: number; charCount: number } {
+  const scannedLines: ScannedLine[] = [];
+
+  if (data.blocks && Array.isArray(data.blocks)) {
+    for (const block of data.blocks) {
+      if (block.paragraphs) {
+        for (const para of block.paragraphs) {
+          if (para.lines) {
+            for (const line of para.lines) {
+              scannedLines.push({
+                words: (line.words || []).map((w: any) => ({
+                  text: w.text || '',
+                  confidence: typeof w.confidence === 'number' ? w.confidence : 0,
+                })),
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (scannedLines.length === 0 && data.text) {
+    const textLines = data.text.split(/[\r\n]+/);
+    for (const tl of textLines) {
+      const words = tl.trim().split(/\s+/).filter(Boolean);
+      if (words.length > 0) {
+        scannedLines.push({
+          words: words.map((w: string) => ({
+            text: w,
+            confidence: typeof data.confidence === 'number' ? data.confidence : 70,
+          })),
+        });
+      }
+    }
+  }
+
+  const validLines: string[] = [];
+  let totalConfidence = 0;
+  let totalValidWords = 0;
+  let totalCharCount = 0;
+
+  for (const line of scannedLines) {
+    const passingWords: string[] = [];
+
+    for (const w of line.words) {
+      if (isValidWord(w.text, w.confidence)) {
+        const cleaned = cleanWordText(w.text);
+        if (cleaned) {
+          passingWords.push(cleaned);
+          totalConfidence += w.confidence;
+          totalValidWords++;
+          totalCharCount += cleaned.length;
+        }
+      }
+    }
+
+    if (passingWords.length > 0) {
+      validLines.push(passingWords.join(' '));
+    }
+  }
+
+  const avgConfidence = totalValidWords > 0 ? Math.round(totalConfidence / totalValidWords) : 0;
+  return { lines: validLines, confidence: avgConfidence, totalWords: totalValidWords, charCount: totalCharCount };
 }
 
 class OcrService {
@@ -107,7 +184,7 @@ class OcrService {
       });
 
       await this.worker.setParameters({
-        tessedit_pageseg_mode: PSM.SINGLE_BLOCK,
+        tessedit_pageseg_mode: PSM.SPARSE_TEXT,
       });
 
       this.notify('ready', 100);
@@ -118,7 +195,8 @@ class OcrService {
   }
 
   public async recognizeText(
-    canvas: HTMLCanvasElement | OffscreenCanvas
+    canvas: HTMLCanvasElement | OffscreenCanvas,
+    options?: { allowDualPass?: boolean }
   ): Promise<OcrRecognitionResult | null> {
     if (!this.worker || this.isBusy) {
       if (!this.worker && this.status !== 'loading') {
@@ -133,95 +211,37 @@ class OcrService {
 
     try {
       const { data } = await this.worker.recognize(canvas as unknown as HTMLCanvasElement);
-      const latencyMs = Math.round((performance.now() - start) * 10) / 10;
+      const parsed = parseTesseractData(data);
 
-      interface ScannedWord {
-        text: string;
-        confidence: number;
+      if (parsed.lines.length > 0 && parsed.charCount >= 3 && parsed.confidence >= 48) {
+        const latencyMs = Math.round((performance.now() - start) * 10) / 10;
+        return {
+          text: parsed.lines.join('\n'),
+          lines: parsed.lines,
+          confidence: parsed.confidence,
+          latencyMs,
+          wordCount: parsed.totalWords,
+        };
       }
-      interface ScannedLine {
-        words: ScannedWord[];
-      }
 
-      const scannedLines: ScannedLine[] = [];
+      if (options?.allowDualPass !== false) {
+        const inverted = invertCanvas(canvas);
+        const { data: dataInv } = await this.worker.recognize(inverted as unknown as HTMLCanvasElement);
+        const parsedInv = parseTesseractData(dataInv);
 
-      if (data.blocks && Array.isArray(data.blocks)) {
-        for (const block of data.blocks) {
-          if (block.paragraphs) {
-            for (const para of block.paragraphs) {
-              if (para.lines) {
-                for (const line of para.lines) {
-                  scannedLines.push({
-                    words: (line.words || []).map((w) => ({
-                      text: w.text || '',
-                      confidence: typeof w.confidence === 'number' ? w.confidence : 0,
-                    })),
-                  });
-                }
-              }
-            }
-          }
+        if (parsedInv.lines.length > 0 && parsedInv.charCount >= 3 && parsedInv.confidence >= 48) {
+          const latencyMs = Math.round((performance.now() - start) * 10) / 10;
+          return {
+            text: parsedInv.lines.join('\n'),
+            lines: parsedInv.lines,
+            confidence: parsedInv.confidence,
+            latencyMs,
+            wordCount: parsedInv.totalWords,
+          };
         }
       }
 
-      if (scannedLines.length === 0 && data.text) {
-        const textLines = data.text.split(/[\r\n]+/);
-        for (const tl of textLines) {
-          const words = tl.trim().split(/\s+/).filter(Boolean);
-          if (words.length > 0) {
-            scannedLines.push({
-              words: words.map((w) => ({
-                text: w,
-                confidence: typeof data.confidence === 'number' ? data.confidence : 75,
-              })),
-            });
-          }
-        }
-      }
-
-      const validLines: string[] = [];
-      let totalConfidence = 0;
-      let totalValidWords = 0;
-      let totalCharCount = 0;
-
-      for (const line of scannedLines) {
-        const passingWords: string[] = [];
-
-        for (const w of line.words) {
-          if (isValidWord(w.text, w.confidence)) {
-            const cleaned = cleanWordText(w.text);
-            if (cleaned) {
-              passingWords.push(cleaned);
-              totalConfidence += w.confidence;
-              totalValidWords++;
-              totalCharCount += cleaned.length;
-            }
-          }
-        }
-
-        if (passingWords.length > 0) {
-          validLines.push(passingWords.join(' '));
-        }
-      }
-
-      if (totalValidWords === 0 || totalCharCount < 4 || validLines.length === 0) {
-        return null;
-      }
-
-      const avgConfidence = Math.round(totalConfidence / totalValidWords);
-      if (avgConfidence < 62) {
-        return null;
-      }
-
-      const fullText = validLines.join('\n');
-
-      return {
-        text: fullText,
-        lines: validLines,
-        confidence: avgConfidence,
-        latencyMs,
-        wordCount: totalValidWords,
-      };
+      return null;
     } catch (err) {
       console.warn('OCR recognition error:', err);
       return null;

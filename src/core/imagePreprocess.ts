@@ -2,7 +2,7 @@ export interface PreprocessOptions {
   sharpen?: boolean;
   contrastBoost?: boolean;
   targetWidth?: number;
-  autoInvert?: boolean;
+  invert?: boolean;
 }
 
 export function enhancePackagingContrast(
@@ -12,7 +12,7 @@ export function enhancePackagingContrast(
   const srcWidth = sourceCanvas.width;
   const srcHeight = sourceCanvas.height;
 
-  const targetW = options?.targetWidth || Math.max(800, srcWidth);
+  const targetW = options?.targetWidth || Math.max(900, srcWidth);
   const scale = targetW / srcWidth;
   const targetH = Math.round(srcHeight * scale);
 
@@ -32,31 +32,15 @@ export function enhancePackagingContrast(
   const len = data.length;
 
   const hist = new Uint32Array(256);
-  let totalBorderLum = 0;
-  let borderPixelCount = 0;
 
-  const borderMarginX = Math.max(2, Math.floor(targetW * 0.05));
-  const borderMarginY = Math.max(2, Math.floor(targetH * 0.05));
-
-  for (let y = 0; y < targetH; y++) {
-    const isBorderY = y < borderMarginY || y >= targetH - borderMarginY;
-    const rowOffset = y * targetW * 4;
-
-    for (let x = 0; x < targetW; x++) {
-      const idx = rowOffset + x * 4;
-      const lum = (data[idx] * 77 + data[idx + 1] * 150 + data[idx + 2] * 29) >> 8;
-      hist[lum]++;
-
-      if (isBorderY || x < borderMarginX || x >= targetW - borderMarginX) {
-        totalBorderLum += lum;
-        borderPixelCount++;
-      }
-    }
+  for (let i = 0; i < len; i += 4) {
+    const lum = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+    hist[lum]++;
   }
 
   const totalPixels = targetW * targetH;
-  const p5Count = Math.floor(totalPixels * 0.04);
-  const p95Count = Math.floor(totalPixels * 0.96);
+  const p4Count = Math.floor(totalPixels * 0.04);
+  const p96Count = Math.floor(totalPixels * 0.96);
 
   let accumulated = 0;
   let minLum = 0;
@@ -64,25 +48,24 @@ export function enhancePackagingContrast(
 
   for (let i = 0; i < 256; i++) {
     accumulated += hist[i];
-    if (accumulated >= p5Count && minLum === 0) {
+    if (accumulated >= p4Count && minLum === 0) {
       minLum = i;
     }
-    if (accumulated >= p95Count) {
+    if (accumulated >= p96Count) {
       maxLum = i;
       break;
     }
   }
 
-  const range = Math.max(20, maxLum - minLum);
-  const avgBorderLum = borderPixelCount > 0 ? totalBorderLum / borderPixelCount : 128;
-  const shouldInvert = options?.autoInvert !== false && avgBorderLum < 120;
+  const range = Math.max(25, maxLum - minLum);
+  const doInvert = options?.invert === true;
 
   for (let i = 0; i < len; i += 4) {
     const lum = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
     let stretched = ((lum - minLum) * 255) / range;
     stretched = Math.min(255, Math.max(0, stretched));
 
-    if (shouldInvert) {
+    if (doInvert) {
       stretched = 255 - stretched;
     }
 
@@ -94,11 +77,110 @@ export function enhancePackagingContrast(
   ctx.putImageData(imgData, 0, 0);
 
   if (options?.sharpen !== false) {
-    ctx.filter = 'contrast(1.2) brightness(1.02)';
+    ctx.filter = 'contrast(1.22) brightness(1.02)';
     ctx.drawImage(canvas, 0, 0);
     ctx.filter = 'none';
   }
 
+  return canvas;
+}
+
+export function invertCanvas(
+  sourceCanvas: HTMLCanvasElement | OffscreenCanvas
+): HTMLCanvasElement {
+  const width = sourceCanvas.width;
+  const height = sourceCanvas.height;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return canvas;
+
+  ctx.drawImage(sourceCanvas as CanvasImageSource, 0, 0);
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
+  const len = data.length;
+
+  for (let i = 0; i < len; i += 4) {
+    data[i] = 255 - data[i];
+    data[i + 1] = 255 - data[i + 1];
+    data[i + 2] = 255 - data[i + 2];
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+  return canvas;
+}
+
+export function applyLocalAdaptiveThreshold(
+  sourceCanvas: HTMLCanvasElement | OffscreenCanvas,
+  windowSize = 25,
+  percentage = 12
+): HTMLCanvasElement {
+  const width = sourceCanvas.width;
+  const height = sourceCanvas.height;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return canvas;
+
+  ctx.drawImage(sourceCanvas as CanvasImageSource, 0, 0);
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
+
+  const gray = new Uint8Array(width * height);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    gray[p] = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+  }
+
+  const integral = new Uint32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    let rowSum = 0;
+    const yOffset = y * width;
+    for (let x = 0; x < width; x++) {
+      rowSum += gray[yOffset + x];
+      if (y === 0) {
+        integral[x] = rowSum;
+      } else {
+        integral[yOffset + x] = integral[yOffset - width + x] + rowSum;
+      }
+    }
+  }
+
+  const s2 = Math.floor(windowSize / 2);
+  const factor = (100 - percentage) / 100;
+
+  for (let y = 0; y < height; y++) {
+    const y1 = Math.max(0, y - s2);
+    const y2 = Math.min(height - 1, y + s2);
+    const yOffset = y * width;
+
+    for (let x = 0; x < width; x++) {
+      const x1 = Math.max(0, x - s2);
+      const x2 = Math.min(width - 1, x + s2);
+      const count = (x2 - x1 + 1) * (y2 - y1 + 1);
+
+      const sum =
+        integral[y2 * width + x2] -
+        (x1 > 0 ? integral[y2 * width + (x1 - 1)] : 0) -
+        (y1 > 0 ? integral[(y1 - 1) * width + x2] : 0) +
+        (x1 > 0 && y1 > 0 ? integral[(y1 - 1) * width + (x1 - 1)] : 0);
+
+      const threshold = (sum / count) * factor;
+      const pixelVal = gray[yOffset + x] < threshold ? 0 : 255;
+      const idx = (yOffset + x) * 4;
+
+      data[idx] = pixelVal;
+      data[idx + 1] = pixelVal;
+      data[idx + 2] = pixelVal;
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
   return canvas;
 }
 

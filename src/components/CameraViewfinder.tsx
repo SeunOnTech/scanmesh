@@ -190,7 +190,9 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" />
 
           <div
-            className={`relative w-[280px] h-[280px] rounded-2xl transition-all duration-300 ${
+            className={`relative transition-all duration-300 ${
+              isTextMode ? 'w-[310px] sm:w-[340px] h-[200px] sm:h-[220px]' : 'w-[270px] h-[270px]'
+            } rounded-2xl ${
               isLocked
                 ? isTextMode
                   ? 'border-2 border-cyan-400 shadow-[0_0_35px_rgba(6,182,212,0.7)] bg-cyan-500/10'

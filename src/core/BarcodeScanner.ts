@@ -21,8 +21,11 @@ export class BarcodeScannerService {
   private worker: Worker | null = null;
   private videoElement: HTMLVideoElement | null = null;
 
-  private fullCropCanvas: HTMLCanvasElement | null = null;
-  private fullCropCtx: CanvasRenderingContext2D | null = null;
+  private barcodeCanvas: HTMLCanvasElement | null = null;
+  private barcodeCtx: CanvasRenderingContext2D | null = null;
+
+  private textCropCanvas: HTMLCanvasElement | null = null;
+  private textCropCtx: CanvasRenderingContext2D | null = null;
 
   private isRunning: boolean = false;
   private isProcessingBarcode: boolean = false;
@@ -73,7 +76,7 @@ export class BarcodeScannerService {
       'qr_code',
       'data_matrix',
     ];
-    this.roiSize = options?.roiSize || 260;
+    this.roiSize = options?.roiSize || 280;
     if (options?.debounceMs !== undefined) {
       this.debounceMs = options.debounceMs;
     }
@@ -259,7 +262,7 @@ export class BarcodeScannerService {
     });
   }
 
-  private getCropCanvas(): HTMLCanvasElement | null {
+  private getCropCanvas(forText: boolean = false): HTMLCanvasElement | null {
     if (!this.videoElement) return null;
     const video = this.videoElement;
     if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return null;
@@ -268,25 +271,46 @@ export class BarcodeScannerService {
     const videoHeight = video.videoHeight;
     if (videoWidth === 0 || videoHeight === 0) return null;
 
+    if (forText) {
+      const cropW = Math.round(videoWidth * 0.85);
+      const cropH = Math.round(Math.min(videoHeight * 0.72, cropW * 0.62));
+      const sx = Math.max(0, Math.round((videoWidth - cropW) / 2));
+      const sy = Math.max(0, Math.round((videoHeight - cropH) / 2));
+
+      if (!this.textCropCanvas) {
+        this.textCropCanvas = document.createElement('canvas');
+        this.textCropCanvas.width = cropW;
+        this.textCropCanvas.height = cropH;
+        this.textCropCtx = this.textCropCanvas.getContext('2d', { willReadFrequently: true });
+      } else if (this.textCropCanvas.width !== cropW || this.textCropCanvas.height !== cropH) {
+        this.textCropCanvas.width = cropW;
+        this.textCropCanvas.height = cropH;
+      }
+
+      if (!this.textCropCtx) return null;
+      this.textCropCtx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cropW, cropH);
+      return this.textCropCanvas;
+    }
+
     const minDimension = Math.min(videoWidth, videoHeight);
-    const cropRatio = Math.min(0.88, Math.max(0.48, this.roiSize / 380));
+    const cropRatio = Math.min(0.85, Math.max(0.48, this.roiSize / 380));
     const cropSize = Math.round(minDimension * cropRatio);
     const sx = Math.max(0, Math.round((videoWidth - cropSize) / 2));
     const sy = Math.max(0, Math.round((videoHeight - cropSize) / 2));
 
-    if (!this.fullCropCanvas) {
-      this.fullCropCanvas = document.createElement('canvas');
-      this.fullCropCanvas.width = cropSize;
-      this.fullCropCanvas.height = cropSize;
-      this.fullCropCtx = this.fullCropCanvas.getContext('2d', { willReadFrequently: true });
-    } else if (this.fullCropCanvas.width !== cropSize) {
-      this.fullCropCanvas.width = cropSize;
-      this.fullCropCanvas.height = cropSize;
+    if (!this.barcodeCanvas) {
+      this.barcodeCanvas = document.createElement('canvas');
+      this.barcodeCanvas.width = cropSize;
+      this.barcodeCanvas.height = cropSize;
+      this.barcodeCtx = this.barcodeCanvas.getContext('2d', { willReadFrequently: true });
+    } else if (this.barcodeCanvas.width !== cropSize) {
+      this.barcodeCanvas.width = cropSize;
+      this.barcodeCanvas.height = cropSize;
     }
 
-    if (!this.fullCropCtx) return null;
-    this.fullCropCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, cropSize, cropSize);
-    return this.fullCropCanvas;
+    if (!this.barcodeCtx) return null;
+    this.barcodeCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, cropSize, cropSize);
+    return this.barcodeCanvas;
   }
 
   private async captureAndProcess() {
@@ -294,25 +318,25 @@ export class BarcodeScannerService {
       return;
     }
 
-    const cropCanvas = this.getCropCanvas();
-    if (!cropCanvas) return;
-
     const now = performance.now();
 
     if (this.scanMode !== 'text' && !this.isProcessingBarcode && this.worker) {
-      this.isProcessingBarcode = true;
-      try {
-        if ('createImageBitmap' in window) {
-          const targetW = Math.min(520, cropCanvas.width);
-          const bitmap = await createImageBitmap(cropCanvas, {
-            resizeWidth: targetW,
-            resizeHeight: targetW,
-            resizeQuality: 'medium',
-          });
-          this.worker.postMessage({ type: 'DETECT_FRAME', bitmap, timestamp: now }, [bitmap]);
+      const barcodeCrop = this.getCropCanvas(false);
+      if (barcodeCrop) {
+        this.isProcessingBarcode = true;
+        try {
+          if ('createImageBitmap' in window) {
+            const targetW = Math.min(520, barcodeCrop.width);
+            const bitmap = await createImageBitmap(barcodeCrop, {
+              resizeWidth: targetW,
+              resizeHeight: targetW,
+              resizeQuality: 'medium',
+            });
+            this.worker.postMessage({ type: 'DETECT_FRAME', bitmap, timestamp: now }, [bitmap]);
+          }
+        } catch {
+          this.isProcessingBarcode = false;
         }
-      } catch {
-        this.isProcessingBarcode = false;
       }
     }
 
@@ -324,7 +348,10 @@ export class BarcodeScannerService {
 
     if (shouldRunOcr) {
       this.lastOcrAttemptTime = now;
-      this.runOcrPass(cropCanvas);
+      const textCrop = this.getCropCanvas(true);
+      if (textCrop) {
+        this.runOcrPass(textCrop);
+      }
     }
   }
 
@@ -334,11 +361,11 @@ export class BarcodeScannerService {
       const enhancedCanvas = enhancePackagingContrast(nativeCropCanvas, {
         sharpen: true,
         contrastBoost: true,
-        targetWidth: 850,
+        targetWidth: 900,
       });
 
-      const ocrResult = await ocrService.recognizeText(enhancedCanvas);
-      if (ocrResult && ocrResult.lines.length > 0 && ocrResult.confidence >= 68) {
+      const ocrResult = await ocrService.recognizeText(enhancedCanvas, { allowDualPass: false });
+      if (ocrResult && ocrResult.lines.length > 0 && ocrResult.confidence >= 48) {
         this.lastOcrConfidence = ocrResult.confidence;
 
         const isDuplicate =
@@ -368,17 +395,17 @@ export class BarcodeScannerService {
   }
 
   public async scanTextNow(): Promise<ScanResult | null> {
-    const cropCanvas = this.getCropCanvas();
+    const cropCanvas = this.getCropCanvas(true);
     if (!cropCanvas) return null;
 
     try {
       const enhancedCanvas = enhancePackagingContrast(cropCanvas, {
         sharpen: true,
         contrastBoost: true,
-        targetWidth: 900,
+        targetWidth: 950,
       });
 
-      const ocrResult = await ocrService.recognizeText(enhancedCanvas);
+      const ocrResult = await ocrService.recognizeText(enhancedCanvas, { allowDualPass: true });
       if (ocrResult && ocrResult.lines.length > 0) {
         const scanResult = this.commitTextResult(ocrResult);
         return scanResult;
